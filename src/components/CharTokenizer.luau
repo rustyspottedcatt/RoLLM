@@ -10,7 +10,7 @@ CharTokenizer.__index = CharTokenizer
 
 export type CharTokenizerClass = {
     new: () -> CharTokenizerClass,
-    buildVocabFromText: (self: CharTokenizerClass, text: string) -> any,
+    buildVocabFromText: (self: CharTokenizerClass, text: string) -> (),
     getVocabSize: (self: CharTokenizerClass) -> number,
     textToTokens: (self: CharTokenizerClass, text: string) -> { number },
     tokensToText: (self: CharTokenizerClass, tokens: { number }) -> string,
@@ -22,10 +22,11 @@ function CharTokenizer.new(): CharTokenizerClass
     self.ivocab = {}
     self.vocabSize = 0
     self.unknownToken = "<UNK>"
+    
     return self
 end
 
-function CharTokenizer:buildVocabFromText(text: string): any
+function CharTokenizer:buildVocabFromText(text: string): ()
     for c in text:gmatch(".") do
         if not self.vocab[c] then
             self.vocabSize += 1

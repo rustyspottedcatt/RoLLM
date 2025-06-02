@@ -6,139 +6,167 @@
 ]]
 
 local Types = require(script.Parent.Parent.lib.types)
-local LinearAlgebraModule = require(script.Parent.LinearAlgebra)
 
 export type Matrix = Types.Matrix
 
 export type LayerNormClass = {
-    new: (dModel: number, eps: number?) -> LayerNormClass,
-    dModel: number,
-    eps: number,
-    gamma: { number },
-    beta: { number },
-    forward: (self: LayerNormClass, x: Matrix) -> Matrix,
-    backward: (self: LayerNormClass, x: Matrix, gradOutput: Matrix) -> Matrix,
-    getParameters: (self: LayerNormClass) -> { gamma: { number }, beta: { number } },
-    setParameters: (self: LayerNormClass, params: { gamma: { number }, beta: { number } }) -> any,
+	new: (dModel: number, eps: number?) -> LayerNormClass,
+	dModel: number,
+	eps: number,
+	gamma: { number },
+	beta: { number },
+	forward: (self: LayerNormClass, x: Matrix) -> Matrix,
+	backward: (self: LayerNormClass, x: Matrix, gradOutput: Matrix) -> Matrix,
+	getParameters: (self: LayerNormClass) -> { gamma: { number }, beta: { number } },
+	setParameters: (self: LayerNormClass, params: { gamma: { number }, beta: { number } }) -> nil,
 }
 
 local LayerNorm = {}
 LayerNorm.__index = LayerNorm
 
-local LinearAlgebra = LinearAlgebraModule.new()
-
 function LayerNorm.new(dModel: number, eps: number?): LayerNormClass
-    local self = setmetatable({}, LayerNorm)
-    self.dModel = dModel
-    self.eps = eps or 1e-5
+	local self = setmetatable({}, LayerNorm)
+	self.dModel = dModel
+	self.eps = eps or 1e-5
 
-    self.gamma = {}
-    self.beta = {}
-    for i = 1, dModel do
-        self.gamma[i] = 1
-        self.beta[i] = 0
-    end
+	self.gamma = {}
+	self.beta = {}
+	for i = 1, dModel do
+		self.gamma[i] = 1
+		self.beta[i] = 0
+	end
 
-    -- Cache for backward pass
-    self.cache = {}
+	self.cache = {}
 
-    return self
+	return self
 end
 
 function LayerNorm:forward(x: Matrix): Matrix
-    local seqLen = #x
-    local out: Matrix = {}
+	local seqLen = #x
+	local out: Matrix = {}
 
-    -- Compute mean and variance for each row
-    local mean = {}
-    local var = {}
-    for i = 1, seqLen do
-        mean[i] = 0
-        for j = 1, self.dModel do
-            mean[i] += x[i][j]
-        end
-        mean[i] /= self.dModel
+	local mean = {}
+	local var = {}
+	for i = 1, seqLen do
+		mean[i] = 0
+		for j = 1, self.dModel do
+			mean[i] += x[i][j]
+		end
+		mean[i] /= self.dModel
 
-        var[i] = 0
-        for j = 1, self.dModel do
-            local diff = x[i][j] - mean[i]
-            var[i] += diff * diff
-        end
-        var[i] /= self.dModel
-    end
+		var[i] = 0
+		for j = 1, self.dModel do
+			local diff = x[i][j] - mean[i]
+			var[i] += diff * diff
+		end
+		var[i] /= self.dModel
+	end
 
-    -- Normalize and scale
-    for i = 1, seqLen do
-        out[i] = {}
-        for j = 1, self.dModel do
-            out[i][j] = ((x[i][j] - mean[i]) / math.sqrt(var[i] + self.eps)) * self.gamma[j] + self.beta[j]
-        end
-    end
+	local normalized = {}
 
-    -- Store cache for backward pass
-    self.cache = {
-        x = x,
-        mean = mean,
-        var = var,
-        normalized = out,
-    }
+	for i = 1, seqLen do
+		out[i] = {}
+		local normRow = {}
+		for j = 1, self.dModel do
+			local norm = (x[i][j] - mean[i]) / math.sqrt(var[i] + self.eps)
+			normRow[j] = norm
+			out[i][j] = norm * self.gamma[j] + self.beta[j]
+		end
+		normalized[i] = normRow
+	end
 
-    return out
+	self.cache = {
+		x = x,
+		mean = mean,
+		var = var,
+		normalized = normalized,
+	}
+
+	return out
 end
 
 function LayerNorm:backward(x: Matrix, gradOutput: Matrix): Matrix
-    local seqLen = #x
-    local gradInput: Matrix = {}
-    local gradGamma: { number } = {}
-    local gradBeta: { number } = {}
+	local seqLen = #x
+	local gradInput: Matrix = {}
+	local gradGamma: { number } = {}
+	local gradBeta: { number } = {}
 
-    -- Initialize gradients
-    for j = 1, self.dModel do
-        gradGamma[j] = 0
-        gradBeta[j] = 0
-    end
+	local gamma = self.gamma
+	local eps = self.eps
+	local mean = self.cache.mean
+	local var = self.cache.var
+	local normalized = self.cache.normalized
 
-    -- Compute gradients w.r.t gamma and beta
-    for i = 1, seqLen do
-        for j = 1, self.dModel do
-            gradGamma[j] += gradOutput[i][j] * self.cache.normalized[i][j]
-            gradBeta[j] += gradOutput[i][j]
-        end
-    end
+	-- gradients
+	for j = 1, self.dModel do
+		gradGamma[j] = 0
+		gradBeta[j] = 0
+	end
 
-    -- Compute gradients w.r.t input
-    for i = 1, seqLen do
-        gradInput[i] = {}
-        for j = 1, self.dModel do
-            local norm = 1 / math.sqrt(self.cache.var[i] + self.eps)
-            gradInput[i][j] = gradOutput[i][j] * self.gamma[j] * norm
-        end
-    end
+	-- grads w.r.t gamma and beta
+	for i = 1, seqLen do
+		for j = 1, self.dModel do
+			gradGamma[j] += gradOutput[i][j] * normalized[i][j]
+			gradBeta[j] += gradOutput[i][j]
+		end
+	end
 
-    -- Further gradients would involve derivatives through normalization
-    -- This is a simplified version; full implementation requires more steps
+	-- grads w.r.t input x
+	for i = 1, seqLen do
+		gradInput[i] = {}
 
-    -- Update parameters (gamma and beta) gradients
-    self.gradGamma = gradGamma
-    self.gradBeta = gradBeta
+		local std = math.sqrt(var[i] + eps)
+		local x_hat = normalized[i]
 
-    return gradInput
+		local dxhat: { number } = {}
+		local dvar = 0
+		local dmean = 0
+
+		for j = 1, self.dModel do
+			dxhat[j] = gradOutput[i][j] * gamma[j]
+		end
+
+		-- dvar = sum(dxhat * (x - mean) * -0.5 * std^-3)
+		for j = 1, self.dModel do
+			local xmu = x[i][j] - mean[i]
+			dvar += dxhat[j] * xmu * -0.5 / (std ^ 3)
+		end
+
+		-- dmean = sum(dxhat * -1 / std) + dvar * sum(-2 * (x - mean)) / dModel
+		for j = 1, self.dModel do
+			dmean += dxhat[j] * -1 / std
+		end
+		for j = 1, self.dModel do
+			dmean += dvar * -2 * (x[i][j] - mean[i]) / self.dModel
+		end
+
+		--  output
+		for j = 1, self.dModel do
+			local xmu = x[i][j] - mean[i]
+			gradInput[i][j] = dxhat[j] / std + dvar * 2 * xmu / self.dModel + dmean / self.dModel
+		end
+	end
+
+	self.gradGamma = gradGamma
+	self.gradBeta = gradBeta
+
+	return gradInput
 end
 
 function LayerNorm:getParameters(): { gamma: { number }, beta: { number } }
-    return {
-        gamma = self.gamma,
-        beta = self.beta,
-    }
+	return {
+		gamma = self.gamma,
+		beta = self.beta,
+	}
 end
 
-function LayerNorm:setParameters(params: { gamma: { number }, beta: { number } }): void
-    for j, value in ipairs(params.gamma) do
-        self.gamma[j] = value
-    end
-    for j, value in ipairs(params.beta) do
-        self.beta[j] = value
-    end
+function LayerNorm:setParameters(params: { gamma: { number }, beta: { number } })
+	for j, value in ipairs(params.gamma) do
+		self.gamma[j] = value
+	end
+	for j, value in ipairs(params.beta) do
+		self.beta[j] = value
+	end
 end
 
 return LayerNorm

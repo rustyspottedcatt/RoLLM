@@ -48,8 +48,7 @@ local RoLLM = {}
     @readonly
     References the Presets folder.
 ]=]
-
-RoLLM.Presets = (script.Parent :: Instance)
+RoLLM.Presets = script.Parent :: Instance
 
 RoLLM.Promise = require(RoLLM.Presets.promise)
 RoLLM.Signal = require(RoLLM.Presets.signal)
@@ -73,14 +72,14 @@ RoLLM.BPETokenizer = BPETokenizer
     @return {string} - A table containing string chunks.
 ]=]
 local function chunkString(bigString: string, chunkSize: number): { string }
-    local chunks: { string } = {}
-    local idx = 1
-    while idx <= #bigString do
-        local chunk = string.sub(bigString, idx, idx + chunkSize - 1)
-        table.insert(chunks, chunk)
-        idx += chunkSize
-    end
-    return chunks
+	local chunks: { string } = {}
+	local idx = 1
+	while idx <= #bigString do
+		local chunk = string.sub(bigString, idx, idx + chunkSize - 1)
+		table.insert(chunks, chunk)
+		idx += chunkSize
+	end
+	return chunks
 end
 
 --[=[
@@ -93,115 +92,133 @@ end
     @param chunkSize number? - Optional chunk size for processing text.
     @return {any} - An LLM object with prediction, generation, and training methods.
 ]=]
-function RoLLM.new(
-    textData: string | { string },
-    config: Types.TransformerConfig,
-    chunkSize: number?
-): { any }
-    chunkSize = chunkSize or 500000
-    local tokenizerMode: string = config.tokenizerMode or "char"
+function RoLLM.new(textData: string | { string }, config: Types.TransformerConfig, chunkSize: number?): { any }
+	if config == nil then
+		error("TransformerConfig is required when constructing RoLLM")
+	end
+	if type(config) ~= "table" then
+		error("TransformerConfig must be a table")
+	end
 
-    local tokenizer: typeof(Tokenizer.new("char"))
-    if tokenizerMode == "char" then
-        tokenizer = CharTokenizer.new()
-    else
-        tokenizer = BPETokenizer.new()
-        if config.externalVocabURL then
-            tokenizer:loadExternalVocab(config.externalVocabURL)
-        end
-    end
+	chunkSize = chunkSize or 500000 :: number
+	local tokenizerMode: string = config.tokenizerMode or "char"
 
-    local function addTextForChar(str: string): any
-		if tokenizerMode == "char" then
-        	tokenizer:buildVocabFromText(str)
-		else
-			tokenizer:textToTokens(str);
+	local tokenizer
+	if tokenizerMode == "char" then
+		tokenizer = CharTokenizer.new()
+	else
+		local bpeTok: BPETokenizer.BPETokenizerClass = BPETokenizer.new()
+		if config.externalVocabURL then
+			bpeTok:loadExternalVocab(config.externalVocabURL)
 		end
-    end
+		tokenizer = bpeTok
+	end
 
-    if tokenizerMode == "char" then
-        if type(textData) == "table" then
-            for _, singleString in ipairs(textData) do
-                if #singleString > chunkSize then
-                    local chunks = chunkString(singleString, chunkSize)
-                    for _, chunk in ipairs(chunks) do
-                        addTextForChar(chunk)
-                    end
-                else
-                    addTextForChar(singleString)
-                end
-            end
-        else
-            if #textData > chunkSize then
-                local chunks = chunkString(textData, chunkSize)
-                for _, chunk in ipairs(chunks) do
-                    addTextForChar(chunk)
-                end
-            else
-                addTextForChar(textData)
-            end
-        end
-    else
-		if #textData > chunkSize then
-			local chunks = chunkString(textData, chunkSize)
-			for _, chunk in ipairs(chunks) do
-				addTextForChar(chunk)
+	local function addTextForChar(str: string)
+		if tokenizerMode == "char" then
+			tokenizer:buildVocabFromText(str)
+		else
+			tokenizer:textToTokens(str)
+		end
+	end
+
+	if tokenizerMode == "char" then
+		if type(textData) == "table" then
+			for _, singleString in ipairs(textData) do
+				if #singleString > chunkSize then
+					local chunks = chunkString(singleString, chunkSize :: number)
+					for _, chunk in ipairs(chunks) do
+						addTextForChar(chunk)
+					end
+				else
+					addTextForChar(singleString)
+				end
 			end
 		else
-			addTextForChar(textData)
+			if #textData > chunkSize then
+				local chunks = chunkString(textData, chunkSize :: number)
+				for _, chunk in ipairs(chunks) do
+					addTextForChar(chunk)
+				end
+			else
+				addTextForChar(textData)
+			end
 		end
-    end
+	else
+		if type(textData) == "table" then
+			for _, singleString in ipairs(textData) do
+				if #singleString > chunkSize then
+					local chunks = chunkString(singleString, chunkSize :: number)
+					for _, chunk in ipairs(chunks) do
+						addTextForChar(chunk)
+					end
+				else
+					addTextForChar(singleString)
+				end
+			end
+		else
+			if #textData > chunkSize then
+				local chunks = chunkString(textData, chunkSize :: number)
+				for _, chunk in ipairs(chunks) do
+					addTextForChar(chunk)
+				end
+			else
+				addTextForChar(textData)
+			end
+		end
+	end
 
-    local vocabSize: number = tokenizer:getVocabSize()
-    if vocabSize == 0 then
-        error("Vocab size is 0. Did you load data or external vocab properly?")
-    end
-    config.vocabSize = vocabSize
-    print("Final vocab size:", vocabSize)
+	local vocabSize: number = tokenizer:getVocabSize()
+	if vocabSize == 0 then
+		error("Vocab size is 0. Did you load data or external vocab properly?")
+	end
+	config.vocabSize = vocabSize
+	print("Final vocab size:", vocabSize)
 
-    local model: TransformerModel.TransformerModelClass = TransformerModel.new(config)
+	config.maxSeqLen = config.maxSeqLen or 128
+	local model: TransformerModel.TransformerModelClass = TransformerModel.new(config)
 
-    local self = {}
+	local self = {}
 
-    local function textToTokens(str: string): { number }
-        return tokenizer:textToTokens(str)
-    end
+	local function textToTokens(str: string): { number }
+		return tokenizer:textToTokens(str)
+	end
 
-    local function tokensToText(toks: { number }): string
-        return tokenizer:tokensToText(toks)
-    end
+	local function tokensToText(toks: { number }): string
+		return tokenizer:tokensToText(toks)
+	end
 
-    function self:predict(inputStr: string): string
-        local tokens = textToTokens(inputStr)
-        local nextID = model:predictNextToken(tokens)
-        return tokensToText({ nextID })
-    end
+	function self:predict(inputStr: string): string
+		local tokens = textToTokens(inputStr)
+		local nextID = model:predictNextToken(tokens)
+		return tokensToText({ nextID })
+	end
 
-    function self:generate(inputStr: string, numTokens: number): string
-        local tokens = textToTokens(inputStr)
-        for _ = 1, numTokens do
-            local nxt = model:predictNextToken(tokens)
-            table.insert(tokens, nxt)
-        end
-        return tokensToText(tokens)
-    end
+	function self:generate(inputStr: string, numTokens: number): string
+		local tokens = textToTokens(inputStr)
+		for _ = 1, numTokens do
+			local nxt = model:predictNextToken(tokens)
+			table.insert(tokens, nxt)
+		end
+		return tokensToText(tokens)
+	end
 
-    function self:predictTemperature(inputStr: string, temperature: number): string
-        local tokens = textToTokens(inputStr)
-        local nextID = model:predictNextTokenTemperature(tokens, temperature)
-        return tokensToText({ nextID })
-    end
+	function self:predictTemperature(inputStr: string, temperature: number): string
+		local tokens = textToTokens(inputStr)
+		local nextID = model:predictNextTokenTemperature(tokens, temperature)
+		return tokensToText({ nextID })
+	end
 
-    function self:generateTemperature(inputStr: string, numTokens: number, temperature: number): string
-        local tokens = textToTokens(inputStr)
-        for _ = 1, numTokens do
-            local nxt = model:predictNextTokenTemperature(tokens, temperature)
-            table.insert(tokens, nxt)
-        end
-        return tokensToText(tokens)
-    end
+	function self:generateTemperature(inputStr: string, numTokens: number, temperature: number): string
+		local tokens = textToTokens(inputStr)
+		for _ = 1, numTokens do
+			local nxt = model:predictNextTokenTemperature(tokens, temperature)
+			table.insert(tokens, nxt)
+		end
+		return tokensToText(tokens)
+	end
 
-    --[=[
+	--[=[
         Trains the Transformer model using provided training data.
 
         @function trainModel
@@ -211,50 +228,143 @@ function RoLLM.new(
         @param learningRate number - Learning rate for the optimizer.
         @return nil
     ]=]
-	function self:trainModel(trainingData: { string }, epochs: number, learningRate: number): any
+	function self:trainModel(trainingData: { string }, epochs: number, learningRate: number): nil
+		if type(trainingData) ~= "table" then
+			error("trainingData must be a table of strings")
+		end
+
 		local optimizerInstance = Optimizer.new(learningRate)
 		local lossFunction = CrossEntropyLoss.new()
-	
+
 		print(string.format("Starting Training: %d epochs, Learning Rate: %f", epochs, learningRate))
-	
+
 		for epoch = 1, epochs do
 			local totalLoss = 0
+
 			for _, data in ipairs(trainingData) do
 				local tokens = textToTokens(data)
-	
 				if #tokens < 2 then
-					error(string.format("Input sequence is too short for training. Tokens: %s", table.concat(tokens, ", ")))
+					error(
+						string.format(
+							"Input sequence is too short for training. Tokens: %s",
+							table.concat(tokens, ", ")
+						)
+					)
 				end
-	
-				print(string.format("Input tokens for training: %s", table.concat(tokens, ", ")))
-	
-				local logits = model:forward(tokens)
-	
-				local targets = {}
+
+				local logitsFull = model:forward(tokens)
+				local seqLen = #logitsFull
+
+				local truncatedLogits: { { number } } = {}
+				for i = 1, seqLen - 1 do
+					truncatedLogits[i] = logitsFull[i]
+				end
+
+				local targets: { number } = {}
 				for i = 2, #tokens do
 					table.insert(targets, tokens[i])
 				end
-	
-				print(string.format("Generated targets: %s", table.concat(targets, ", ")))
-	
-				local loss = lossFunction:compute(logits, targets)
+
+				local loss = lossFunction:compute(truncatedLogits, targets)
 				totalLoss += loss
-	
-				local gradOutput = lossFunction:backward(logits, targets)
-				model:backward(gradOutput)
-	
-				optimizerInstance:updateParameters(model:getParameters())
+
+				local gradTruncated: { { number } } = lossFunction:backward(truncatedLogits, targets)
+
+				local paddedGrad: { { number } } = {}
+				for i = 1, seqLen - 1 do
+					paddedGrad[i] = gradTruncated[i]
+				end
+				paddedGrad[seqLen] = {}
+				for j = 1, vocabSize do
+					paddedGrad[seqLen][j] = 0
+				end
+
+				local backResults = model:backward(paddedGrad)
+				local gradEmbeddingOut = backResults.gradEmbedding
+				local gradFinalProj = backResults.gradFinalProj
+				local gradEmbeddingWeights = backResults.gradEmbeddingWeights
+
+				local allParams: { [string]: { value: { { number } }, grad: { { number } } } } = {}
+
+				allParams["finalProj"] = {
+					value = model.finalProj,
+					grad = gradFinalProj,
+				}
+
+				allParams["embeddingWeights"] = {
+					value = model.embedding.weights,
+					grad = gradEmbeddingWeights,
+				}
+
+				for idx, block in ipairs(model.blocks) do
+					local blockParams = block:getParameters()
+
+					allParams[string.format("block%d_mha_Wq", idx)] = {
+						value = blockParams.mha.Wq,
+						grad = blockParams.mha.gradWq or {},
+					}
+					allParams[string.format("block%d_mha_Wk", idx)] = {
+						value = blockParams.mha.Wk,
+						grad = blockParams.mha.gradWk or {},
+					}
+					allParams[string.format("block%d_mha_Wv", idx)] = {
+						value = blockParams.mha.Wv,
+						grad = blockParams.mha.gradWv or {},
+					}
+					allParams[string.format("block%d_mha_Wo", idx)] = {
+						value = blockParams.mha.Wo,
+						grad = blockParams.mha.gradWo or {},
+					}
+
+					allParams[string.format("block%d_ff_W1", idx)] = {
+						value = blockParams.ff.W1,
+						grad = blockParams.ff.gradW1 or {},
+					}
+					allParams[string.format("block%d_ff_b1", idx)] = {
+						value = blockParams.ff.b1,
+						grad = blockParams.ff.gradb1 or {},
+					}
+					allParams[string.format("block%d_ff_W2", idx)] = {
+						value = blockParams.ff.W2,
+						grad = blockParams.ff.gradW2 or {},
+					}
+					allParams[string.format("block%d_ff_b2", idx)] = {
+						value = blockParams.ff.b2,
+						grad = blockParams.ff.gradb2 or {},
+					}
+
+					allParams[string.format("block%d_norm1_gamma", idx)] = {
+						value = blockParams.norm1.gamma,
+						grad = blockParams.norm1.gradGamma or {},
+					}
+					allParams[string.format("block%d_norm1_beta", idx)] = {
+						value = blockParams.norm1.beta,
+						grad = blockParams.norm1.gradBeta or {},
+					}
+					allParams[string.format("block%d_norm2_gamma", idx)] = {
+						value = blockParams.norm2.gamma,
+						grad = blockParams.norm2.gradGamma or {},
+					}
+					allParams[string.format("block%d_norm2_beta", idx)] = {
+						value = blockParams.norm2.beta,
+						grad = blockParams.norm2.gradBeta or {},
+					}
+				end
+
+				optimizerInstance:updateParameters(allParams)
 			end
+
 			print(string.format("Epoch %d/%d, Loss: %.4f", epoch, epochs, totalLoss))
 		end
-	
-		print("Training Completed.")
-	end	
-	
-    self._tokenizer = tokenizer
-    self._model = model
 
-    return self
+		print("Training Completed.")
+		return nil
+	end
+
+	self._tokenizer = tokenizer
+	self._model = model
+
+	return self
 end
 
 return RoLLM

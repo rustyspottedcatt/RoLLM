@@ -1,3 +1,5 @@
+-- Embedding.lua
+
 --[[
     Embedding Module
 
@@ -8,18 +10,18 @@
 local Types = require(script.Parent.Parent.lib.types)
 local LinearAlgebraModule = require(script.Parent.LinearAlgebra)
 
-export type Matrix = Types.Matrix
-
 export type EmbeddingClass = {
-    new: (vocabSize: number, dModel: number, maxSeqLen: number?) -> EmbeddingClass,
-    vocabSize: number,
-    dModel: number,
-    tokenEmb: Matrix,
-    posEmb: Matrix?,
-    forward: (self: EmbeddingClass, tokens: { number }, positions: { number }?) -> Matrix,
-    backward: (self: EmbeddingClass, gradOutput: Matrix ) -> { tokensGrad: { number }, positionsGrad: Matrix? },
-    getParameters: (self: EmbeddingClass) -> { tokenEmb: Matrix, posEmb: Matrix? },
-    setParameters: (self: EmbeddingClass, params: { tokenEmb: Matrix, posEmb: Matrix? }) -> any,
+	new: (vocabSize: number, dModel: number, maxSeqLen: number) -> EmbeddingClass,
+	vocabSize: number,
+	dModel: number,
+	maxSeqLen: number,
+	weights: { { number } },
+	positions: { { number } }, 
+	forward: (self: EmbeddingClass, tokens: { number }, positions: { number }) -> { { number } },
+	backward: (
+		self: EmbeddingClass,
+		gradOutput: { { number } }
+	) -> { positionsGrad: { { number } }, weightsGrad: { { number } } },
 }
 
 local Embedding = {}
@@ -27,112 +29,96 @@ Embedding.__index = Embedding
 
 local LinearAlgebra = LinearAlgebraModule.new()
 
-function Embedding.new(vocabSize: number, dModel: number, maxSeqLen: number?): EmbeddingClass
-    local self = setmetatable({}, Embedding)
-    self.vocabSize = vocabSize
-    self.dModel = dModel
+function Embedding.new(vocabSize: number, dModel: number, maxSeqLen: number): EmbeddingClass
+	local self = setmetatable({}, Embedding)
+	self.vocabSize = vocabSize
+	self.dModel = dModel
+	self.maxSeqLen = maxSeqLen
+	self.weights = LinearAlgebra:randomMatrix(vocabSize, dModel, 0.01)
+	self.positions = {}
 
-    self.tokenEmb = LinearAlgebra:randomMatrix(vocabSize, dModel, 0.01)
+	for pos = 1, maxSeqLen do
+		local row = {}
+		for i = 1, dModel do
+			local angle = pos / (10000 ^ ((i - 1) / dModel))
+			if i % 2 == 1 then
+				row[i] = math.sin(angle)
+			else
+				row[i] = math.cos(angle)
+			end
+		end
+		self.positions[pos] = row
+	end
 
-    if maxSeqLen then
-        self.posEmb = LinearAlgebra:randomMatrix(maxSeqLen, dModel, 0.01)
-    end
+	self.cache = {
+		tokens = nil,
+		positions = nil,
+		embeddedTokens = nil, -- (seqLen × dModel) sum of token‐embed + pos‐embed
+	}
 
-    -- Cache for backward pass
-    self.cache = {}
-
-    return self
+	return self
 end
 
-function Embedding:forward(tokens: { number }, positions: { number }?): Matrix
-    local seqLen = #tokens
-    local output: Matrix = {}
+function Embedding:forward(tokens: { number }, positions: { number }): { { number } }
+	local seqLen = #tokens
+	local out: { { number } } = {}
 
-    for i = 1, seqLen do
-        output[i] = {}
-        local tokenID = tokens[i]
+	for i = 1, seqLen do
+		local tokenID = tokens[i]
+		local tokenEmbedRow = {}
+		for j = 1, self.dModel do
+			tokenEmbedRow[j] = self.weights[tokenID][j]
+		end
 
-        for d = 1, self.dModel do
-            local val = self.tokenEmb[tokenID][d]
-            if self.posEmb and positions then
-                local posID = positions[i]
-                val += self.posEmb[posID][d]
-            end
-            output[i][d] = val
-        end
-    end
+		local posID = positions[i]
+		local posRow = self.positions[posID]
+		local sumRow = {}
+		for j = 1, self.dModel do
+			sumRow[j] = tokenEmbedRow[j] + posRow[j]
+		end
 
-    -- Store cache for backward pass
-    self.cache = {
-        tokens = tokens,
-        positions = positions,
-    }
+		out[i] = sumRow
+	end
 
-    return output
+	self.cache.tokens = { table.unpack(tokens) } -- copy of tokens
+	self.cache.positions = { table.unpack(positions) } -- copy of positions
+	self.cache.embeddedTokens = out -- (seqLen × dModel)
+
+	return out
 end
 
-function Embedding:backward(gradOutput: Matrix): { tokensGrad: { number }, positionsGrad: Matrix? }
-    local seqLen = #gradOutput
-    local tokensGrad: { number } = {}
-    local positionsGrad: Matrix? = nil
+function Embedding:backward(gradOutput: { { number } }): { positionsGrad: { { number } }, weightsGrad: { { number } } }
+	local tokens = self.cache.tokens -- { tokenID, ... }
+	local positions = self.cache.positions -- { posID, ... }
+	local seqLen = #tokens
 
-    if self.posEmb then
-        positionsGrad = LinearAlgebra:zeros(#self.posEmb, self.dModel)
-    end
+	local positionsGrad: { { number } } = {}
+	for i = 1, seqLen do
+		positionsGrad[i] = {}
+		for j = 1, self.dModel do
+			positionsGrad[i][j] = gradOutput[i][j] 
+		end
+	end
 
-    -- Initialize gradients
-    for i = 1, self.vocabSize do
-        tokensGrad[i] = 0
-    end
+	local weightsGrad: { { number } } = {}
+	for v = 1, self.vocabSize do
+		weightsGrad[v] = {}
+		for j = 1, self.dModel do
+			weightsGrad[v][j] = 0
+		end
+	end
 
-    if self.posEmb then
-        for i = 1, #self.posEmb do
-            for d = 1, self.dModel do
-                positionsGrad[i][d] = 0
-            end
-        end
-    end
+	for i = 1, seqLen do
+		local tokenID = tokens[i]
+		for j = 1, self.dModel do
+			weightsGrad[tokenID][j] += gradOutput[i][j]
+		end
+	end
 
-    -- Accumulate gradients
-    for i = 1, seqLen do
-        local tokenID = self.cache.tokens[i]
-        for d = 1, self.dModel do
-            tokensGrad[tokenID] += gradOutput[i][d]
-            if self.posEmb and self.cache.positions then
-                local posID = self.cache.positions[i]
-                positionsGrad[posID][d] += gradOutput[i][d]
-            end
-        end
-    end
-
-    -- Gradient w.r.t tokenEmb and posEmb
-    for i = 1, self.vocabSize do
-        for d = 1, self.dModel do
-            self.tokenEmb[i][d] += tokensGrad[i]  -- Assuming gradient descent with learning rate incorporated elsewhere
-        end
-    end
-
-    if self.posEmb and positionsGrad then
-        for i = 1, #self.posEmb do
-            for d = 1, self.dModel do
-                self.posEmb[i][d] += positionsGrad[i][d]  -- Assuming gradient descent with learning rate incorporated elsewhere
-            end
-        end
-    end
-
-    return { tokensGrad = tokensGrad, positionsGrad = positionsGrad }
-end
-
-function Embedding:getParameters(): { tokenEmb: Matrix, posEmb: Matrix? }
-    return {
-        tokenEmb = self.tokenEmb,
-        posEmb = self.posEmb,
-    }
-end
-
-function Embedding:setParameters(params: { tokenEmb: Matrix, posEmb: Matrix? }): any
-    self.tokenEmb = params.tokenEmb
-    self.posEmb = params.posEmb
+	return {
+		positionsGrad = positionsGrad,
+		weightsGrad = weightsGrad,
+	}
 end
 
 return Embedding

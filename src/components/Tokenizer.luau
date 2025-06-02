@@ -8,14 +8,7 @@
 local CharTokenizer = require(script.Parent.CharTokenizer)
 local BPETokenizer = require(script.Parent.BPETokenizer)
 
-export type TokenizerClass = {
-    new: (mode: string) -> TokenizerClass,
-    getVocabSize: (self: TokenizerClass) -> number,
-    textToTokens: (self: TokenizerClass, text: string) -> { number },
-    tokensToText: (self: TokenizerClass, tokens: { number }) -> string,
-    buildVocabFromText: (self: TokenizerClass, text: string) -> any,
-    loadExternalVocab: (self: TokenizerClass, url: string) -> any,
-}
+export type TokenizerClass = CharTokenizer.CharTokenizerClass | BPETokenizer.BPETokenizerClass
 
 local Tokenizer = {}
 Tokenizer.__index = Tokenizer
