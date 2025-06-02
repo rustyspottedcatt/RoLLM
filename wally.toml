@@ -1,7 +1,7 @@
 [package]
 name = "rustyspotted@rustyspottedcatt/RoLLM"
 description = "Lorem ipsum"
-version = "0.0.1"
+version = "0.1.0"
 license = "MIT"
 registry = "https://github.com/rustyspottedcatt/RoLLM"
 realm = "shared"
