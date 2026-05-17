@@ -98,7 +98,7 @@ end
 
 local function forEachTextChunk(textData: string | { string }, chunkSize: number, callback: (string) -> ())
 	if type(textData) == "table" then
-		assert(#textData > 0, "textData must contain at least one string")
+		if #textData == 0 then return end
 		for _, singleString in ipairs(textData) do
 			assert(type(singleString) == "string" and #singleString > 0, "textData entries must be non-empty strings")
 			if #singleString > chunkSize then
