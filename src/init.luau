@@ -266,6 +266,36 @@ function RoLLM.new(textData: string | { string }, config: Types.TransformerConfi
 		local yieldEvery: number? = options and options.yieldEverySamples
 		local sampleCount = 0
 		local startTime = os.clock()
+		local batchSize = math.max(1, (options and options.batchSize) or 1)
+		local gradAccum: { [string]: any } = {}
+		local lastParams: { [string]: { value: any, grad: any } } = {}
+		local batchCount = 0
+
+		local function flushBatch()
+			if batchCount == 0 then return end
+			local batchParams: { [string]: { value: any, grad: any } } = {}
+			for k, accum in pairs(gradAccum) do
+				local scaledGrad
+				if type(accum[1]) == "table" then
+					scaledGrad = {}
+					for i = 1, #accum do
+						scaledGrad[i] = {}
+						for j = 1, #accum[i] do
+							scaledGrad[i][j] = accum[i][j] / batchCount
+						end
+					end
+				else
+					scaledGrad = {}
+					for i = 1, #accum do
+						scaledGrad[i] = accum[i] / batchCount
+					end
+				end
+				batchParams[k] = { value = lastParams[k].value, grad = scaledGrad }
+			end
+			optimizerInstance:updateParameters(batchParams)
+			gradAccum = {}
+			batchCount = 0
+		end
 
 		for _, data in ipairs(trainingData) do
 			local tokens = trimTokensToContext(textToTokens(data), maxSeqLen)
@@ -380,12 +410,39 @@ function RoLLM.new(textData: string | { string }, config: Types.TransformerConfi
 					}
 				end
 
-				optimizerInstance:updateParameters(allParams)
+				for k, paramStruct in pairs(allParams) do
+					lastParams[k] = paramStruct
+					local g = paramStruct.grad
+					if not gradAccum[k] then
+						if type(g[1]) == "table" then
+							gradAccum[k] = {}
+							for i = 1, #g do
+								gradAccum[k][i] = {}
+								for j = 1, #g[i] do gradAccum[k][i][j] = g[i][j] or 0 end
+							end
+						else
+							gradAccum[k] = {}
+							for i = 1, #g do gradAccum[k][i] = g[i] or 0 end
+						end
+					else
+						if type(g[1]) == "table" then
+							for i = 1, #g do
+								for j = 1, #g[i] do gradAccum[k][i][j] += g[i][j] or 0 end
+							end
+						else
+							for i = 1, #g do gradAccum[k][i] += g[i] or 0 end
+						end
+					end
+				end
+				batchCount += 1
+				if batchCount >= batchSize then flushBatch() end
 				sampleCount += 1
 				if yieldEvery and sampleCount % yieldEvery == 0 then
 					task.wait()
 				end
 			end
+
+			flushBatch()
 
 			local averageLoss = totalLoss / math.max(samples, 1)
 			table.insert(history, {

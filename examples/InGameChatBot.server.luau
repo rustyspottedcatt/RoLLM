@@ -5,7 +5,7 @@ local RoLLM = require(ReplicatedStorage.RoLLM)
  
 local BOT_NAME = "GameBot"
 local COMMAND_PREFIX = "!rollm"
-local MODEL_STORE_KEY = "GameBot_v1"
+local MODEL_STORE_KEY = "GameBot_v2"
 local MAX_RESPONSE_TOKENS = 40
 local RESPONSE_TEMPERATURE = 0.5
  
@@ -917,7 +917,7 @@ end
 
 local trainingData = buildTrainingData(corpus)
 
-local llm = RoLLM.new(corpus, {
+local llm = RoLLM.new(trainingData, {
 	dModel = 64,
 	numHeads = 4,
 	dFF = 128,
@@ -933,7 +933,8 @@ if llm:loadModel(MODEL_STORE_KEY) then
 else
 	print(string.format("[%s] No saved model found. Training on %d samples...", BOT_NAME, #trainingData))
 
-	local history = llm:trainModel(trainingData, 10, 0.003, {
+	local history = llm:trainModel(trainingData, 20, 0.01, {
+		batchSize = 32,
 		yieldEverySamples = 1,
 		onEpochComplete = function(epoch, totalEpochs, avgLoss, elapsed)
 			local pct = epoch / totalEpochs
