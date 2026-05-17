@@ -178,8 +178,9 @@ else
 	local ROLLING_N   = 10
 
 	local history = llm:trainModel(trainingData, 200, 0.007, {
-		batchSize                = 8,
-		yieldEveryParameterUpdates = 1,
+		actorCount        = 4,
+		batchSize         = 8,
+		yieldEverySamples = 1,
 		onEpochComplete   = function(epoch, total, avgLoss, elapsed)
 			-- Track best and rolling average
 			if avgLoss < bestLoss then bestLoss = avgLoss end

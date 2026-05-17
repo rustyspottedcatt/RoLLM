@@ -1,4 +1,5 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 --[[
     https://www.roblox.com/users/1539582829/profile
     https://twitter.com/zzen_a
@@ -271,6 +272,63 @@ function RoLLM.new(textData: string | { string }, config: Types.TransformerConfi
 		local lastParams: { [string]: { value: any, grad: any } } = {}
 		local batchCount = 0
 
+		-- Parallel Actor setup
+		local actorCount = math.max(1, (options and options.actorCount) or 1)
+		local workerActors: { any } = {}
+		local resultEvent: BindableEvent? = nil
+
+		local modelConfig: { [string]: any }? = nil
+		if actorCount > 1 then
+			modelConfig = {
+				dModel    = model.dModel,
+				numHeads  = model.blocks[1] and model.blocks[1].mha.numHeads or 1,
+				dFF       = model.blocks[1] and model.blocks[1].ff.dFF or 1,
+				numLayers = model.numLayers,
+				maxSeqLen = model.maxSeqLen,
+				vocabSize = vocabSize,
+			}
+		end
+
+		local function extractWeightSnapshot(): { [string]: any }
+			local snap: { [string]: any } = {
+				finalProj        = model.finalProj,
+				embeddingWeights = model.embedding.weights,
+			}
+			for idx, block in ipairs(model.blocks) do
+				local bp = block:getParameters()
+				local p  = "block" .. idx
+				snap[p .. "_mha_Wq"]      = bp.mha.Wq
+				snap[p .. "_mha_Wk"]      = bp.mha.Wk
+				snap[p .. "_mha_Wv"]      = bp.mha.Wv
+				snap[p .. "_mha_Wo"]      = bp.mha.Wo
+				snap[p .. "_ff_W1"]       = bp.ff.W1
+				snap[p .. "_ff_b1"]       = bp.ff.b1
+				snap[p .. "_ff_W2"]       = bp.ff.W2
+				snap[p .. "_ff_b2"]       = bp.ff.b2
+				snap[p .. "_norm1_gamma"] = bp.norm1.gamma
+				snap[p .. "_norm1_beta"]  = bp.norm1.beta
+				snap[p .. "_norm2_gamma"] = bp.norm2.gamma
+				snap[p .. "_norm2_beta"]  = bp.norm2.beta
+			end
+			return snap
+		end
+
+		if actorCount > 1 then
+			local workerTemplate = script:FindFirstChild("WorkerAgent")
+			assert(workerTemplate, "RoLLM: WorkerAgent not found in package — cannot use actorCount > 1")
+			local re = Instance.new("BindableEvent")
+			re.Parent = script
+			resultEvent = re
+			for _ = 1, actorCount do
+				local actor = Instance.new("Actor")
+				local clone = workerTemplate:Clone()
+				clone.Parent = actor
+				actor.Parent = ServerScriptService
+				table.insert(workerActors, actor)
+			end
+			task.wait(0.5)
+		end
+
 		local function flushBatch()
 			if batchCount == 0 then return end
 			local batchParams: { [string]: { value: any, grad: any } } = {}
@@ -309,140 +367,207 @@ function RoLLM.new(textData: string | { string }, config: Types.TransformerConfi
 			local totalLoss = 0
 			local samples = 0
 
-			for _, tokens in ipairs(tokenizedTrainingData) do
-				local logitsFull = model:forward(tokens)
-				local seqLen = #logitsFull
+			if actorCount > 1 then
+				-- === PARALLEL PATH ===
+				-- snapshot holds references to the live model matrices.
+				-- actor:SendMessage deep-copies the data into each worker's memory.
+				-- optimizer:updateParameters mutates the originals in-place → model stays current.
+				local snapshot = extractWeightSnapshot()
 
-				local truncatedLogits: { { number } } = {}
-				for i = 1, seqLen - 1 do
-					truncatedLogits[i] = logitsFull[i]
+				local shards: { { { number } } } = {}
+				for i = 1, actorCount do shards[i] = {} end
+				for i, tokens in ipairs(tokenizedTrainingData) do
+					table.insert(shards[(i - 1) % actorCount + 1], tokens)
 				end
 
-				local targets: { number } = {}
-				for i = 2, #tokens do
-					table.insert(targets, tokens[i])
-				end
-
-				local loss = lossFunction:compute(truncatedLogits, targets)
-				totalLoss += loss
-				samples += 1
-
-				local gradTruncated: { { number } } = lossFunction:backward(truncatedLogits, targets)
-
-				local paddedGrad: { { number } } = {}
-				for i = 1, seqLen - 1 do
-					paddedGrad[i] = gradTruncated[i]
-				end
-				paddedGrad[seqLen] = {}
-				for j = 1, vocabSize do
-					paddedGrad[seqLen][j] = 0
-				end
-
-				local backResults = model:backward(paddedGrad)
-				local gradFinalProj = backResults.gradFinalProj
-				local gradEmbeddingWeights = backResults.gradEmbeddingWeights
-
-				local allParams: { [string]: { value: any, grad: any } } = {}
-
-				allParams["finalProj"] = {
-					value = model.finalProj,
-					grad = gradFinalProj,
-				}
-
-				allParams["embeddingWeights"] = {
-					value = model.embedding.weights,
-					grad = gradEmbeddingWeights,
-				}
-
-				for idx, block in ipairs(model.blocks) do
-					local blockParams = block:getParameters()
-					local blockPrefix = string.format("block%d", idx)
-
-					allParams[blockPrefix .. "_mha_Wq"] = {
-						value = blockParams.mha.Wq,
-						grad = blockParams.mha.gradWq or {},
-					}
-					allParams[blockPrefix .. "_mha_Wk"] = {
-						value = blockParams.mha.Wk,
-						grad = blockParams.mha.gradWk or {},
-					}
-					allParams[blockPrefix .. "_mha_Wv"] = {
-						value = blockParams.mha.Wv,
-						grad = blockParams.mha.gradWv or {},
-					}
-					allParams[blockPrefix .. "_mha_Wo"] = {
-						value = blockParams.mha.Wo,
-						grad = blockParams.mha.gradWo or {},
-					}
-
-					allParams[blockPrefix .. "_ff_W1"] = {
-						value = blockParams.ff.W1,
-						grad = blockParams.ff.gradW1 or {},
-					}
-					allParams[blockPrefix .. "_ff_b1"] = {
-						value = blockParams.ff.b1,
-						grad = blockParams.ff.gradB1 or {},
-					}
-					allParams[blockPrefix .. "_ff_W2"] = {
-						value = blockParams.ff.W2,
-						grad = blockParams.ff.gradW2 or {},
-					}
-					allParams[blockPrefix .. "_ff_b2"] = {
-						value = blockParams.ff.b2,
-						grad = blockParams.ff.gradB2 or {},
-					}
-
-					allParams[blockPrefix .. "_norm1_gamma"] = {
-						value = blockParams.norm1.gamma,
-						grad = blockParams.norm1.gradGamma or {},
-					}
-					allParams[blockPrefix .. "_norm1_beta"] = {
-						value = blockParams.norm1.beta,
-						grad = blockParams.norm1.gradBeta or {},
-					}
-					allParams[blockPrefix .. "_norm2_gamma"] = {
-						value = blockParams.norm2.gamma,
-						grad = blockParams.norm2.gradGamma or {},
-					}
-					allParams[blockPrefix .. "_norm2_beta"] = {
-						value = blockParams.norm2.beta,
-						grad = blockParams.norm2.gradBeta or {},
-					}
-				end
-
-				for k, paramStruct in pairs(allParams) do
-					lastParams[k] = paramStruct
-					local g = paramStruct.grad
-					if not gradAccum[k] then
-						if type(g[1]) == "table" then
-							gradAccum[k] = {}
-							for i = 1, #g do
-								gradAccum[k][i] = {}
-								for j = 1, #g[i] do gradAccum[k][i][j] = g[i][j] or 0 end
-							end
-						else
-							gradAccum[k] = {}
-							for i = 1, #g do gradAccum[k][i] = g[i] or 0 end
-						end
-					else
-						if type(g[1]) == "table" then
-							for i = 1, #g do
-								for j = 1, #g[i] do gradAccum[k][i][j] += g[i][j] or 0 end
-							end
-						else
-							for i = 1, #g do gradAccum[k][i] += g[i] or 0 end
-						end
+				local activeWorkers = 0
+				for i = 1, actorCount do
+					if #shards[i] > 0 then
+						workerActors[i]:SendMessage("Work", i, resultEvent, modelConfig, snapshot, shards[i])
+						activeWorkers += 1
 					end
 				end
-				batchCount += 1
-				if batchCount >= batchSize then flushBatch() end
-				sampleCount += 1
-				if yieldEvery and sampleCount % yieldEvery == 0 then
-					task.wait()
-				end
-			end
 
-			flushBatch()
+				local allGrads: { [number]: { [string]: any } } = {}
+				local re = resultEvent :: BindableEvent
+				for _ = 1, activeWorkers do
+					local workerId, gradAccumW, loss, count = re.Event:Wait()
+					allGrads[workerId] = gradAccumW
+					totalLoss += loss
+					samples   += count
+				end
+
+				local firstGradKey = next(allGrads)
+				assert(firstGradKey ~= nil, "RoLLM parallel: no gradients received from workers")
+				local firstGrad = allGrads[firstGradKey :: number]
+				local batchParams: { [string]: { value: any, grad: any } } = {}
+				for k, g in pairs(firstGrad) do
+					if type(g[1]) == "table" then
+						local avgGrad = {}
+						for i = 1, #g do
+							avgGrad[i] = {}
+							for j = 1, #g[i] do
+								local sum = 0
+								for _, wg in pairs(allGrads) do
+									sum += (wg[k] and wg[k][i] and wg[k][i][j]) or 0
+								end
+								avgGrad[i][j] = sum / activeWorkers
+							end
+						end
+						batchParams[k] = { value = snapshot[k], grad = avgGrad }
+					else
+						local avgGrad = {}
+						for i = 1, #g do
+							local sum = 0
+							for _, wg in pairs(allGrads) do
+								sum += (wg[k] and wg[k][i]) or 0
+							end
+							avgGrad[i] = sum / activeWorkers
+						end
+						batchParams[k] = { value = snapshot[k], grad = avgGrad }
+					end
+				end
+
+				optimizerInstance:updateParameters(batchParams)
+				task.wait()
+
+			else
+				-- === SERIAL PATH (unchanged) ===
+				for _, tokens in ipairs(tokenizedTrainingData) do
+					local logitsFull = model:forward(tokens)
+					local seqLen = #logitsFull
+
+					local truncatedLogits: { { number } } = {}
+					for i = 1, seqLen - 1 do
+						truncatedLogits[i] = logitsFull[i]
+					end
+
+					local targets: { number } = {}
+					for i = 2, #tokens do
+						table.insert(targets, tokens[i])
+					end
+
+					local loss = lossFunction:compute(truncatedLogits, targets)
+					totalLoss += loss
+					samples += 1
+
+					local gradTruncated: { { number } } = lossFunction:backward(truncatedLogits, targets)
+
+					local paddedGrad: { { number } } = {}
+					for i = 1, seqLen - 1 do
+						paddedGrad[i] = gradTruncated[i]
+					end
+					paddedGrad[seqLen] = {}
+					for j = 1, vocabSize do
+						paddedGrad[seqLen][j] = 0
+					end
+
+					local backResults = model:backward(paddedGrad)
+					local gradFinalProj = backResults.gradFinalProj
+					local gradEmbeddingWeights = backResults.gradEmbeddingWeights
+
+					local allParams: { [string]: { value: any, grad: any } } = {}
+
+					allParams["finalProj"] = {
+						value = model.finalProj,
+						grad = gradFinalProj,
+					}
+
+					allParams["embeddingWeights"] = {
+						value = model.embedding.weights,
+						grad = gradEmbeddingWeights,
+					}
+
+					for idx, block in ipairs(model.blocks) do
+						local blockParams = block:getParameters()
+						local blockPrefix = string.format("block%d", idx)
+
+						allParams[blockPrefix .. "_mha_Wq"] = {
+							value = blockParams.mha.Wq,
+							grad = blockParams.mha.gradWq or {},
+						}
+						allParams[blockPrefix .. "_mha_Wk"] = {
+							value = blockParams.mha.Wk,
+							grad = blockParams.mha.gradWk or {},
+						}
+						allParams[blockPrefix .. "_mha_Wv"] = {
+							value = blockParams.mha.Wv,
+							grad = blockParams.mha.gradWv or {},
+						}
+						allParams[blockPrefix .. "_mha_Wo"] = {
+							value = blockParams.mha.Wo,
+							grad = blockParams.mha.gradWo or {},
+						}
+
+						allParams[blockPrefix .. "_ff_W1"] = {
+							value = blockParams.ff.W1,
+							grad = blockParams.ff.gradW1 or {},
+						}
+						allParams[blockPrefix .. "_ff_b1"] = {
+							value = blockParams.ff.b1,
+							grad = blockParams.ff.gradB1 or {},
+						}
+						allParams[blockPrefix .. "_ff_W2"] = {
+							value = blockParams.ff.W2,
+							grad = blockParams.ff.gradW2 or {},
+						}
+						allParams[blockPrefix .. "_ff_b2"] = {
+							value = blockParams.ff.b2,
+							grad = blockParams.ff.gradB2 or {},
+						}
+
+						allParams[blockPrefix .. "_norm1_gamma"] = {
+							value = blockParams.norm1.gamma,
+							grad = blockParams.norm1.gradGamma or {},
+						}
+						allParams[blockPrefix .. "_norm1_beta"] = {
+							value = blockParams.norm1.beta,
+							grad = blockParams.norm1.gradBeta or {},
+						}
+						allParams[blockPrefix .. "_norm2_gamma"] = {
+							value = blockParams.norm2.gamma,
+							grad = blockParams.norm2.gradGamma or {},
+						}
+						allParams[blockPrefix .. "_norm2_beta"] = {
+							value = blockParams.norm2.beta,
+							grad = blockParams.norm2.gradBeta or {},
+						}
+					end
+
+					for k, paramStruct in pairs(allParams) do
+						lastParams[k] = paramStruct
+						local g = paramStruct.grad
+						if not gradAccum[k] then
+							if type(g[1]) == "table" then
+								gradAccum[k] = {}
+								for i = 1, #g do
+									gradAccum[k][i] = {}
+									for j = 1, #g[i] do gradAccum[k][i][j] = g[i][j] or 0 end
+								end
+							else
+								gradAccum[k] = {}
+								for i = 1, #g do gradAccum[k][i] = g[i] or 0 end
+							end
+						else
+							if type(g[1]) == "table" then
+								for i = 1, #g do
+									for j = 1, #g[i] do gradAccum[k][i][j] += g[i][j] or 0 end
+								end
+							else
+								for i = 1, #g do gradAccum[k][i] += g[i] or 0 end
+							end
+						end
+					end
+					batchCount += 1
+					if batchCount >= batchSize then flushBatch() end
+					sampleCount += 1
+					if yieldEvery and sampleCount % yieldEvery == 0 then
+						task.wait()
+					end
+				end
+
+				flushBatch()
+			end
 
 			local averageLoss = totalLoss / math.max(samples, 1)
 			table.insert(history, {
@@ -454,6 +579,11 @@ function RoLLM.new(textData: string | { string }, config: Types.TransformerConfi
 			if options and options.onEpochComplete then
 				options.onEpochComplete(epoch, epochs, averageLoss, os.clock() - startTime)
 			end
+		end
+
+		if actorCount > 1 then
+			if resultEvent then resultEvent:Destroy() end
+			for _, actor in ipairs(workerActors) do actor:Destroy() end
 		end
 
 		return history

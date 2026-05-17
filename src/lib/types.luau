@@ -27,6 +27,7 @@ export type TrainingOptions = {
 	yieldEveryParameterUpdates: number?,
 	onEpochComplete: ((epoch: number, totalEpochs: number, averageLoss: number, elapsedSeconds: number) -> ())?,
 	batchSize: number?,
+	actorCount: number?,
 }
 
 export type Matrix = { [number]: { [number]: number } }
