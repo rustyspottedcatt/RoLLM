@@ -12,13 +12,13 @@
 
     WHAT THIS DOES INSTEAD:
     - 40 tightly focused game sentences, all consistent vocabulary and length
-    - Maximum model config: dModel=128, dFF=512, 4 attention heads, 3 layers
-    - 500 epochs — enough to drive loss very low on this corpus size
+    - Model: dModel=64, dFF=128, 4 heads, 2 layers (~75K params)
+    - 200 epochs with batchSize=8 — drives loss low without taking hours
     - Weights saved to DataStore: training runs ONCE, then loads instantly
     - Temperature 0.2: very focused generation, close to greedy but with minor variation
     - Keyword seeding: maps player keywords to corpus-matching start phrases
 
-    FIRST RUN:  trains for ~20-30 minutes then saves weights
+    FIRST RUN:  trains for ~5-10 minutes (Studio) / ~15-20 min (in-game) then saves
     LATER RUNS: loads instantly, skips training entirely
 
     Command: !talk <your message>
@@ -36,7 +36,7 @@ local RoLLM = require(ReplicatedStorage.RoLLM)
 
 local BOT_NAME    = "ProBot"
 local CMD_PREFIX  = "!talk"
-local STORE_KEY   = "ProTalkingBot_v1"
+local STORE_KEY   = "ProTalkingBot_v2"
 local MAX_TOKENS  = 56
 local TEMPERATURE = 0.2
 
@@ -102,11 +102,11 @@ end
 local trainingData = buildTrainingData(CORPUS)
 
 local llm = RoLLM.new(trainingData, {
-	dModel     = 128,
-	numHeads   = 8,
-	dFF        = 512,
-	numLayers  = 3,
-	maxSeqLen  = 60,
+	dModel        = 64,
+	numHeads      = 4,
+	dFF           = 128,
+	numLayers     = 2,
+	maxSeqLen     = 45,
 	tokenizerMode = "char",
 })
 
@@ -168,18 +168,18 @@ if llm:loadModel(STORE_KEY) then
 	print(string.format("[%s] Loaded saved model. Training skipped.", BOT_NAME))
 else
 	print(string.format(
-		"[%s] No saved model found. Training %d samples for 500 epochs.",
+		"[%s] No saved model found. Training %d samples for 200 epochs.",
 		BOT_NAME, #trainingData))
-	print(string.format("[%s] Estimated time: 20-30 minutes. This only runs once.", BOT_NAME))
+	print(string.format("[%s] Estimated time: 5-10 min (Studio) / 15-20 min (in-game). Runs once.", BOT_NAME))
 
 	local bestLoss    = math.huge
 	local prevLoss    = math.huge
 	local recentLosses: { number } = {}
 	local ROLLING_N   = 10
 
-	local history = llm:trainModel(trainingData, 500, 0.005, {
-		batchSize         = 4,
-		yieldEverySamples = 1,
+	local history = llm:trainModel(trainingData, 200, 0.007, {
+		batchSize                = 8,
+		yieldEveryParameterUpdates = 1,
 		onEpochComplete   = function(epoch, total, avgLoss, elapsed)
 			-- Track best and rolling average
 			if avgLoss < bestLoss then bestLoss = avgLoss end
@@ -195,7 +195,7 @@ else
 
 			local throughput = (#trainingData * epoch) / math.max(elapsed, 0.001)
 
-			if epoch % 25 == 0 or epoch == total or epoch == 1 then
+			if epoch % 10 == 0 or epoch == total or epoch == 1 then
 				local pct = math.floor((epoch / total) * 30)
 				local bar = string.rep("|", pct) .. string.rep(".", 30 - pct)
 				local eta = if epoch < total then (elapsed / epoch) * (total - epoch) else 0
