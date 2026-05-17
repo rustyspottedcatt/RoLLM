@@ -1,9 +1,11 @@
 [package]
-name = "rustyspotted@rustyspottedcatt/RoLLM"
-description = "Lorem ipsum"
+name = "rustyspottedcatt/rollm"
+description = "A lightweight educational transformer language-model framework for Roblox Luau."
 version = "0.1.0"
 license = "MIT"
-registry = "https://github.com/rustyspottedcatt/RoLLM"
+authors = ["rustyspotted"]
+repository = "https://github.com/rustyspottedcatt/RoLLM"
+registry = "https://github.com/UpliftGames/wally-index"
 realm = "shared"
 
 [dependencies]

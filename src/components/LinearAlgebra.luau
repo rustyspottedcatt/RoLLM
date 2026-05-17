@@ -68,23 +68,40 @@ function LinearAlgebra:mm(A: Matrix, B: Matrix): Matrix
 	local m = #A
 	local n = #A[1]
 	local p = #B[1]
-	local C = self:zeros(m, p)
-	local B_T = self:transpose(B)
+	assert(#B == n, "mm: matrix dimensions are incompatible")
+
+	local Bt: Matrix = {}
+	for j = 1, p do
+		local col: { number } = {}
+		for k = 1, n do
+			col[k] = B[k][j]
+		end
+		Bt[j] = col
+	end
+
+	local C: Matrix = {}
 	for i = 1, m do
+		local rowA = A[i]
+		local rowC: { number } = {}
 		for j = 1, p do
 			local sum = 0
-			local rowA = A[i]
-			local rowB_T = B_T[j]
+			local colB = Bt[j]
 			for k = 1, n do
-				sum += rowA[k] * rowB_T[k]
+				sum += rowA[k] * colB[k]
 			end
-			C[i][j] = sum
+			rowC[j] = sum
 		end
+		C[i] = rowC
 	end
 	return C
 end
 
-function LinearAlgebra.mmAsync(self, A: { { number } }, B: { { number } }, callback: (result: { { number } }) -> ()): ()
+function LinearAlgebra.mmAsync(
+	_self,
+	A: { { number } },
+	B: { { number } },
+	callback: (result: { { number } }) -> ()
+): ()
 	coroutine.wrap(function()
 		local result = {}
 		local A_rows = #A

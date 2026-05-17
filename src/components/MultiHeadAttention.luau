@@ -207,24 +207,14 @@ function MultiHeadAttention:backward(gradOutput: Matrix): Matrix
 		for i = 1, seqLen do
 			dscores[i] = {}
 
-			-- 1) Compute sumExp = ∑ₖ exp(scores[i][k])
-			local sumExp = 0
-			for k = 1, seqLen do
-				sumExp += math.exp(scores[i][k])
-			end
-
-			-- 2) Precompute “weighted sum” = ∑ₖ softmax[i][k] * dAttn[i][k]
+			-- Use cached attn (softmax output) to avoid recomputing exp()
 			local weightedSum = 0
 			for k = 1, seqLen do
-				local sk = math.exp(scores[i][k]) / sumExp
-				weightedSum += sk * dAttn[i][k]
+				weightedSum += attn[i][k] * dAttn[i][k]
 			end
 
-			-- 3) Now compute ∂L/∂scores[i][j] = softmax[i][j] * (dAttn[i][j] – weightedSum)
 			for j = 1, seqLen do
-				local sj = math.exp(scores[i][j]) / sumExp
-				dscores[i][j] = sj * (dAttn[i][j] - weightedSum)
-				-- 4) Zero out masked positions
+				dscores[i][j] = attn[i][j] * (dAttn[i][j] - weightedSum)
 				if mask_h and mask_h[i][j] < 0 then
 					dscores[i][j] = 0
 				end
@@ -282,14 +272,10 @@ function MultiHeadAttention:backward(gradOutput: Matrix): Matrix
 		end
 	end
 
-	for h = 1, self.numHeads do
-		self.gradWq =
-			LinearAlgebra:add(self.gradWq, LinearAlgebra:mm(LinearAlgebra:transpose(self.cache.x), gradQ_heads[h]))
-		self.gradWk =
-			LinearAlgebra:add(self.gradWk, LinearAlgebra:mm(LinearAlgebra:transpose(self.cache.x), gradK_heads[h]))
-		self.gradWv =
-			LinearAlgebra:add(self.gradWv, LinearAlgebra:mm(LinearAlgebra:transpose(self.cache.x), gradV_heads[h]))
-	end
+	local xT = LinearAlgebra:transpose(self.cache.x)
+	self.gradWq = LinearAlgebra:mm(xT, gradQ_full)
+	self.gradWk = LinearAlgebra:mm(xT, gradK_full)
+	self.gradWv = LinearAlgebra:mm(xT, gradV_full)
 
 	-- 7) dL/dx: project merged head‐gradients back through Wq, Wk, Wv
 	local gradX_from_Q = LinearAlgebra:mm(gradQ_full, LinearAlgebra:transpose(self.Wq))

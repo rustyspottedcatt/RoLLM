@@ -17,6 +17,7 @@ export type TransformerModelClass = {
 	new: (config: TransformerConfig) -> TransformerModelClass,
 	vocabSize: number,
 	dModel: number,
+	maxSeqLen: number,
 	numLayers: number,
 	blocks: { TransformerBlock.TransformerBlockClass },
 	embedding: Embedding.EmbeddingClass,
@@ -56,6 +57,7 @@ function TransformerModel.new(config: TransformerConfig): TransformerModelClass
 
 	self.vocabSize = config.vocabSize or 0
 	self.dModel = config.dModel
+	self.maxSeqLen = config.maxSeqLen
 	self.numLayers = config.numLayers or 2
 	self.embedding = Embedding.new(self.vocabSize, self.dModel, config.maxSeqLen)
 	self.blocks = {}
@@ -67,27 +69,37 @@ function TransformerModel.new(config: TransformerConfig): TransformerModelClass
 	self.finalProj = LinearAlgebra:randomMatrix(self.dModel, self.vocabSize, 0.01)
 	self.gradFinalProj = nil
 	self.cache = {}
+	self.positionCache = {}
+	self.maskCache = {}
 
 	return self
 end
 
 function TransformerModel:forward(tokens: { number }): Matrix
 	local seqLen = #tokens
+	assert(seqLen > 0, "TransformerModel: tokens cannot be empty")
+	assert(seqLen <= self.maxSeqLen, "TransformerModel: sequence length exceeds maxSeqLen")
 
-	local positions: { number } = {}
-	for i = 1, seqLen do
-		positions[i] = i
+	local positions = self.positionCache[seqLen]
+	if not positions then
+		positions = {}
+		for i = 1, seqLen do
+			positions[i] = i
+		end
+		self.positionCache[seqLen] = positions
 	end
 
 	local x = self.embedding:forward(tokens, positions)
 
-	local mask = LinearAlgebra:zeros(seqLen, seqLen)
-	for i = 1, seqLen do
-		for j = 1, seqLen do
-			if j > i then
+	local mask = self.maskCache[seqLen]
+	if not mask then
+		mask = LinearAlgebra:zeros(seqLen, seqLen)
+		for i = 1, seqLen do
+			for j = i + 1, seqLen do
 				mask[i][j] = -1e9
 			end
 		end
+		self.maskCache[seqLen] = mask
 	end
 
 	for _, block in ipairs(self.blocks) do
@@ -97,9 +109,9 @@ function TransformerModel:forward(tokens: { number }): Matrix
 	local logits = LinearAlgebra:mm(x, self.finalProj)
 
 	self.cache = {
-		tokens = tokens, 
+		tokens = tokens,
 		positions = positions,
-		lastHidden = x, 
+		lastHidden = x,
 		logits = logits,
 	}
 
@@ -111,7 +123,7 @@ function TransformerModel:backward(
 ): { gradEmbedding: Matrix, gradFinalProj: Matrix, gradEmbeddingWeights: Matrix }
 	local lastHidden = self.cache.lastHidden
 	local gradFinalProj = LinearAlgebra:mm(LinearAlgebra:transpose(lastHidden), gradOutput)
-	self.gradFinalProj = gradFinalProj 
+	self.gradFinalProj = gradFinalProj
 
 	local gradLastHidden = LinearAlgebra:mm(gradOutput, LinearAlgebra:transpose(self.finalProj))
 
@@ -133,7 +145,7 @@ end
 function TransformerModel:predictNextToken(tokens: { number }): number
 	local logits = self:forward(tokens)
 	local seqLen = #logits
-	local lastLogits = logits[seqLen] 
+	local lastLogits = logits[seqLen]
 
 	local maxVal = -math.huge
 	local maxIndex = 1

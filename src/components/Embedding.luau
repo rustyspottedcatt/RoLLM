@@ -7,7 +7,6 @@
     @type EmbeddingClass
 ]]
 
-local Types = require(script.Parent.Parent.lib.types)
 local LinearAlgebraModule = require(script.Parent.LinearAlgebra)
 
 export type EmbeddingClass = {
@@ -16,7 +15,7 @@ export type EmbeddingClass = {
 	dModel: number,
 	maxSeqLen: number,
 	weights: { { number } },
-	positions: { { number } }, 
+	positions: { { number } },
 	forward: (self: EmbeddingClass, tokens: { number }, positions: { number }) -> { { number } },
 	backward: (
 		self: EmbeddingClass,
@@ -30,6 +29,10 @@ Embedding.__index = Embedding
 local LinearAlgebra = LinearAlgebraModule.new()
 
 function Embedding.new(vocabSize: number, dModel: number, maxSeqLen: number): EmbeddingClass
+	assert(vocabSize > 0, "Embedding: vocabSize must be greater than 0")
+	assert(dModel > 0, "Embedding: dModel must be greater than 0")
+	assert(maxSeqLen > 0, "Embedding: maxSeqLen must be greater than 0")
+
 	local self = setmetatable({}, Embedding)
 	self.vocabSize = vocabSize
 	self.dModel = dModel
@@ -61,16 +64,22 @@ end
 
 function Embedding:forward(tokens: { number }, positions: { number }): { { number } }
 	local seqLen = #tokens
+	assert(seqLen > 0, "Embedding: tokens cannot be empty")
+	assert(seqLen == #positions, "Embedding: tokens and positions must have the same length")
+	assert(seqLen <= self.maxSeqLen, "Embedding: sequence length exceeds maxSeqLen")
+
 	local out: { { number } } = {}
 
 	for i = 1, seqLen do
 		local tokenID = tokens[i]
+		assert(tokenID >= 1 and tokenID <= self.vocabSize, "Embedding: token id is outside the vocabulary")
 		local tokenEmbedRow = {}
 		for j = 1, self.dModel do
 			tokenEmbedRow[j] = self.weights[tokenID][j]
 		end
 
 		local posID = positions[i]
+		assert(posID >= 1 and posID <= self.maxSeqLen, "Embedding: position id exceeds maxSeqLen")
 		local posRow = self.positions[posID]
 		local sumRow = {}
 		for j = 1, self.dModel do
@@ -89,14 +98,13 @@ end
 
 function Embedding:backward(gradOutput: { { number } }): { positionsGrad: { { number } }, weightsGrad: { { number } } }
 	local tokens = self.cache.tokens -- { tokenID, ... }
-	local positions = self.cache.positions -- { posID, ... }
 	local seqLen = #tokens
 
 	local positionsGrad: { { number } } = {}
 	for i = 1, seqLen do
 		positionsGrad[i] = {}
 		for j = 1, self.dModel do
-			positionsGrad[i][j] = gradOutput[i][j] 
+			positionsGrad[i][j] = gradOutput[i][j]
 		end
 	end
 

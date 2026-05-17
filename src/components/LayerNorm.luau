@@ -116,7 +116,6 @@ function LayerNorm:backward(x: Matrix, gradOutput: Matrix): Matrix
 		gradInput[i] = {}
 
 		local std = math.sqrt(var[i] + eps)
-		local x_hat = normalized[i]
 
 		local dxhat: { number } = {}
 		local dvar = 0

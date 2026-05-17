@@ -5,10 +5,19 @@
 		"ReplicatedStorage": {
 			"$className": "ReplicatedStorage",
 			"Packages": {
-				"$path": "Packages",
-				"RoLLM": {	
-					"$path": "src"
-				}
+				"$path": "Packages"
+			},
+			"RoLLM": {
+				"$path": "src"
+			}
+		},
+		"ServerScriptService": {
+			"$className": "ServerScriptService",
+			"RoLLMExamples": {
+				"$path": "examples"
+			},
+			"RoLLMTests": {
+				"$path": "tests"
 			}
 		}
 	}

@@ -1,0 +1,9 @@
+std = "roblox"
+exclude = ["Packages/**"]
+
+[lints]
+global_usage = "allow"
+multiple_statements = "deny"
+shadowing = "allow"
+unused_variable = "warn"
+if_same_then_else = "allow"
