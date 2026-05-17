@@ -1,3 +1,6 @@
+local Config = require(script.Parent._Config)
+if not Config[script.Name] then return end
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
  

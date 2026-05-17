@@ -20,6 +20,9 @@
       demonstrates construction and a single predict call, not full training.
 ]]
 
+local Config = require(script.Parent._Config)
+if not Config[script.Name] then return end
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RoLLM = require(ReplicatedStorage.RoLLM)
 
@@ -68,7 +71,7 @@ for _, prompt in ipairs(prompts) do
 		return llm:predict(prompt)
 	end)
 	if ok2 then
-		print(string.format("  predict(%q) -> token index %d", prompt, nextTok))
+		print(string.format("  predict(%q) -> %q", prompt, tostring(nextTok)))
 	else
 		print(string.format("  predict(%q) -> error: %s", prompt, tostring(nextTok)))
 	end

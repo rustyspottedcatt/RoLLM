@@ -13,6 +13,9 @@
     temperature behaves differently on repeated calls.
 ]]
 
+local Config = require(script.Parent._Config)
+if not Config[script.Name] then return end
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RoLLM = require(ReplicatedStorage.RoLLM)
 
