@@ -35,7 +35,7 @@ local ok, result = pcall(function()
 		dFF = 32,
 		numLayers = 1,
 		maxSeqLen = 16,
-		tokenizerMode = "external",
+		tokenizerMode = "bpe",
 		externalVocabURL = VOCAB_URL,
 	})
 end)
@@ -47,8 +47,8 @@ Error: %s
 
 Common causes:
   - HTTP Requests are disabled (Game Settings > Security > Allow HTTP Requests)
-  - Hugging Face URL is blocked by Roblox's HTTP allowlist
-  - Studio is in offline mode
+  - Hugging Face URL is not on Roblox's HTTP allowlist
+  - Studio is running in offline mode
 ]], tostring(result)))
 	return
 end
