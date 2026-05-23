@@ -1,4 +1,4 @@
-<img src="https://l7mozmkiwy.ufs.sh/f/HKemhjN71TyOBDSBjRYWE0OaYPF9Vq4jUDItmN6JuXrkiTAe" alt="RoLLM">
+<img width="1500" height="500" alt="image" src="https://github.com/user-attachments/assets/d34446b8-0a26-4015-83cf-4ee2af32b075" />
 
 # RoLLM
 
