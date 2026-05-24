@@ -96,17 +96,16 @@ function CrossEntropyLoss:backward(logits: { { number } }, targets: { number }):
 	self.grad = {}
 
 	for i, _logitRow in ipairs(logits) do
-		self.grad[i] = {}
+
 		local probs = self.probs[i]
 		local target = targets[i]
 
-		for j, prob in ipairs(probs) do
-			if j == target then
-				self.grad[i][j] = prob - 1
-			else
-				self.grad[i][j] = prob
-			end
-		end
+		local subGradCopy = table.copy(probs)
+
+		subGradCopy[target] -= 1
+
+		self.grad[i] = subGradCopy
+
 	end
 
 	return self.grad
