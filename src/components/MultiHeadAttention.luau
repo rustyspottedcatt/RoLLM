@@ -20,6 +20,8 @@ export type MultiHeadAttentionClass = {
 	Wv: Matrix,
 	Wo: Matrix,
 	forward: (self: MultiHeadAttentionClass, x: Matrix, mask: Matrix?) -> Matrix,
+	forwardCached: (self: MultiHeadAttentionClass, x: Matrix, mask: Matrix?) -> Matrix,
+	clearKVCache: (self: MultiHeadAttentionClass) -> (),
 	backward: (self: MultiHeadAttentionClass, gradOutput: Matrix) -> Matrix,
 	getParameters: (self: MultiHeadAttentionClass) -> { Wq: Matrix, Wk: Matrix, Wv: Matrix, Wo: Matrix },
 	setParameters: (self: MultiHeadAttentionClass, params: { Wq: Matrix, Wk: Matrix, Wv: Matrix, Wo: Matrix }) -> nil,
@@ -109,10 +111,10 @@ function MultiHeadAttention.new(dModel: number, numHeads: number): MultiHeadAtte
 	assert(dModel % numHeads == 0, "dModel must be divisible by numHeads")
 	self.dHead = dModel / numHeads
 
-	self.Wq = LinearAlgebra:randomMatrix(dModel, dModel, 0.01)
-	self.Wk = LinearAlgebra:randomMatrix(dModel, dModel, 0.01)
-	self.Wv = LinearAlgebra:randomMatrix(dModel, dModel, 0.01)
-	self.Wo = LinearAlgebra:randomMatrix(dModel, dModel, 0.01)
+	self.Wq = LinearAlgebra:xavierMatrix(dModel, dModel)
+	self.Wk = LinearAlgebra:xavierMatrix(dModel, dModel)
+	self.Wv = LinearAlgebra:xavierMatrix(dModel, dModel)
+	self.Wo = LinearAlgebra:xavierMatrix(dModel, dModel)
 
 	self.gradWq = LinearAlgebra:zeros(dModel, dModel)
 	self.gradWk = LinearAlgebra:zeros(dModel, dModel)
@@ -285,6 +287,120 @@ function MultiHeadAttention:backward(gradOutput: Matrix): Matrix
 	local gradX = LinearAlgebra:add(LinearAlgebra:add(gradX_from_Q, gradX_from_K), gradX_from_V)
 
 	return gradX
+end
+
+-- Clear the KV cache (call before starting a new generation sequence).
+function MultiHeadAttention:clearKVCache()
+	self.kvCacheK = nil
+	self.kvCacheV = nil
+end
+
+-- Inference-only forward with incremental KV cache.
+-- On the first call (cache empty), x may be the full prompt and mask should be the
+-- causal mask.  On subsequent single-token calls, mask should be nil.
+-- Returns output of shape (#x × dModel).
+function MultiHeadAttention:forwardCached(x: Matrix, mask: Matrix?): Matrix
+	local qLen  = #x
+	local scale = math.sqrt(self.dHead)
+
+	local Q     = LinearAlgebra:mm(x, self.Wq)   -- qLen × dModel
+	local K_new = LinearAlgebra:mm(x, self.Wk)   -- qLen × dModel
+	local V_new = LinearAlgebra:mm(x, self.Wv)   -- qLen × dModel
+
+	-- Extend KV cache along sequence dimension
+	if not self.kvCacheK then
+		self.kvCacheK = K_new
+		self.kvCacheV = V_new
+	else
+		local K_full: Matrix = {}
+		local V_full: Matrix = {}
+		for _, row in ipairs(self.kvCacheK) do table.insert(K_full, row) end
+		for _, row in ipairs(K_new)         do table.insert(K_full, row) end
+		for _, row in ipairs(self.kvCacheV) do table.insert(V_full, row) end
+		for _, row in ipairs(V_new)         do table.insert(V_full, row) end
+		self.kvCacheK = K_full
+		self.kvCacheV = V_full
+	end
+
+	local K_full = self.kvCacheK
+	local V_full = self.kvCacheV
+	local kvLen  = #K_full
+
+	local headsOut: { Matrix } = {}
+	for h = 1, self.numHeads do
+		local dOff = (h - 1) * self.dHead
+
+		local Q_h: Matrix = {}
+		for i = 1, qLen do
+			Q_h[i] = {}
+			for d = 1, self.dHead do Q_h[i][d] = Q[i][dOff + d] end
+		end
+
+		local K_h: Matrix = {}
+		local V_h: Matrix = {}
+		for i = 1, kvLen do
+			K_h[i] = {}
+			V_h[i] = {}
+			for d = 1, self.dHead do
+				K_h[i][d] = K_full[i][dOff + d]
+				V_h[i][d] = V_full[i][dOff + d]
+			end
+		end
+
+		-- Cross-attention scores: (qLen × kvLen)
+		local Kt     = LinearAlgebra:transpose(K_h)
+		local scores = LinearAlgebra:mm(Q_h, Kt)
+
+		for i = 1, qLen do
+			for j = 1, kvLen do
+				scores[i][j] = scores[i][j] / scale
+			end
+		end
+
+		-- Apply causal mask if provided (initial prompt fill)
+		if mask then
+			for i = 1, qLen do
+				for j = 1, math.min(kvLen, qLen) do
+					if mask[i] and mask[i][j] and mask[i][j] < 0 then
+						scores[i][j] = -1e9
+					end
+				end
+			end
+		end
+
+		-- Row-wise softmax over key dimension
+		for i = 1, qLen do
+			local rowMax = -math.huge
+			for j = 1, kvLen do
+				if scores[i][j] > rowMax then rowMax = scores[i][j] end
+			end
+			local sumExp = 0
+			for j = 1, kvLen do
+				scores[i][j] = math.exp(scores[i][j] - rowMax)
+				sumExp += scores[i][j]
+			end
+			for j = 1, kvLen do
+				scores[i][j] = scores[i][j] / sumExp
+			end
+		end
+
+		-- attn (qLen × kvLen) @ V_h (kvLen × dHead) → (qLen × dHead)
+		headsOut[h] = LinearAlgebra:mm(scores, V_h)
+	end
+
+	-- Merge heads into (qLen × dModel)
+	local merged: Matrix = {}
+	for i = 1, qLen do
+		merged[i] = {}
+		for h = 1, self.numHeads do
+			local dOff = (h - 1) * self.dHead
+			for d = 1, self.dHead do
+				merged[i][dOff + d] = headsOut[h][i][d]
+			end
+		end
+	end
+
+	return LinearAlgebra:mm(merged, self.Wo)
 end
 
 function MultiHeadAttention:getParameters(): { Wq: Matrix, Wk: Matrix, Wv: Matrix, Wo: Matrix }

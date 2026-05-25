@@ -30,21 +30,34 @@ FeedForward.__index = FeedForward
 
 local LinearAlgebra = LinearAlgebraModule.new()
 
-local function relu(mat: Matrix): Matrix
+local SQRT_2_OVER_PI = math.sqrt(2 / math.pi)  -- ≈ 0.7978845608
+local GELU_COEFF     = 0.044715
+
+-- GELU: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³)))
+local function gelu(mat: Matrix): Matrix
 	local out = LinearAlgebra:zeros(#mat, #mat[1])
 	for i = 1, #mat do
 		for j = 1, #mat[i] do
-			out[i][j] = math.max(0, mat[i][j])
+			local x = mat[i][j]
+			local inner = SQRT_2_OVER_PI * (x + GELU_COEFF * x * x * x)
+			out[i][j] = 0.5 * x * (1 + math.tanh(inner))
 		end
 	end
 	return out
 end
 
-local function reluBackward(x: Matrix, gradOutput: Matrix): Matrix
+-- Exact GELU backward.
+local function geluBackward(x: Matrix, gradOutput: Matrix): Matrix
 	local gradInput: Matrix = LinearAlgebra:zeros(#x, #x[1])
 	for i = 1, #x do
 		for j = 1, #x[i] do
-			gradInput[i][j] = x[i][j] > 0 and gradOutput[i][j] or 0
+			local xv    = x[i][j]
+			local inner = SQRT_2_OVER_PI * (xv + GELU_COEFF * xv * xv * xv)
+			local tanh_inner = math.tanh(inner)
+			local sech2      = 1 - tanh_inner * tanh_inner
+			local dInner_dx  = SQRT_2_OVER_PI * (1 + 3 * GELU_COEFF * xv * xv)
+			local dgelu_dx   = 0.5 * (1 + tanh_inner) + 0.5 * xv * sech2 * dInner_dx
+			gradInput[i][j]  = dgelu_dx * gradOutput[i][j]
 		end
 	end
 	return gradInput
@@ -55,13 +68,13 @@ function FeedForward.new(dModel: number, dFF: number): FeedForwardClass
 	self.dModel = dModel
 	self.dFF = dFF
 
-	self.W1 = LinearAlgebra:randomMatrix(dModel, dFF, 0.01)
+	self.W1 = LinearAlgebra:xavierMatrix(dModel, dFF)
 	self.b1 = {}
 	for j = 1, dFF do
 		self.b1[j] = 0
 	end
 
-	self.W2 = LinearAlgebra:randomMatrix(dFF, dModel, 0.01)
+	self.W2 = LinearAlgebra:xavierMatrix(dFF, dModel)
 	self.b2 = {}
 	for j = 1, dModel do
 		self.b2[j] = 0
@@ -87,10 +100,10 @@ function FeedForward:forward(x: Matrix): Matrix
 
 	self.cache.x = x
 	self.cache.hidden = hidden
-	self.cache.reluOutput = relu(hidden)
+	self.cache.geluOutput = gelu(hidden)
 
 	-- hiddenW2 + b2
-	local out = LinearAlgebra:mm(self.cache.reluOutput, self.W2)
+	local out = LinearAlgebra:mm(self.cache.geluOutput, self.W2)
 	for i = 1, seqLen do
 		for j = 1, self.dModel do
 			out[i][j] += self.b2[j]
@@ -117,17 +130,17 @@ function FeedForward:backward(gradOutput: Matrix): Matrix
 	for i = 1, seqLen do
 		for j = 1, self.dModel do
 			for k = 1, self.dFF do
-				gradW2[k][j] += self.cache.reluOutput[i][k] * gradOutput[i][j]
+				gradW2[k][j] += self.cache.geluOutput[i][k] * gradOutput[i][j]
 			end
 			gradB2[j] += gradOutput[i][j]
 		end
 	end
 
-	-- grads w.r.t hidden (ReLU output)
+	-- grads w.r.t hidden (GELU output)
 	local gradHidden = LinearAlgebra:mm(gradOutput, LinearAlgebra:transpose(self.W2))
 
-	-- grads through ReLU
-	gradHidden = reluBackward(self.cache.hidden, gradHidden)
+	-- grads through GELU
+	gradHidden = geluBackward(self.cache.hidden, gradHidden)
 
 	-- grads w.r.t W1 and b1
 	local gradW1 = LinearAlgebra:zeros(self.dModel, self.dFF)

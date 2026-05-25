@@ -13,6 +13,7 @@ export type TransformerConfig = {
 	maxSeqLen: number,
 	tokenizerMode: string?,
 	externalVocabURL: string?,
+	weightTying: boolean?,
 }
 
 export type TrainingEpoch = {
@@ -28,6 +29,9 @@ export type TrainingOptions = {
 	onEpochComplete: ((epoch: number, totalEpochs: number, averageLoss: number, elapsedSeconds: number) -> ())?,
 	batchSize: number?,
 	actorCount: number?,
+	gradClipNorm: number?,
+	lrSchedule: boolean?,
+	warmupEpochs: number?,
 }
 
 export type Matrix = { [number]: { [number]: number } }

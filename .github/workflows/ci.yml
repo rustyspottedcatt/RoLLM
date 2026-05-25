@@ -38,3 +38,9 @@ jobs:
 
       - name: Build place
         run: rojo build default.project.json --output RoLLM.rbxl
+
+      - name: Transform source for Lune (darklua)
+        run: darklua process --config .darklua.json src dist
+
+      - name: Run unit tests (Lune)
+        run: lune run tests/run_lune.luau

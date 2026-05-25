@@ -1,0 +1,20 @@
+{
+	"generator": "retain_lines",
+	"rules": [
+		{
+			"rule": "convert_require",
+			"current": {
+				"name": "roblox",
+				"rojo_sourcemap": "sourcemap.json"
+			},
+			"target": {
+				"name": "path",
+				"sources": {
+					"src": "src",
+					"Packages": "Packages"
+				},
+				"indexing_style": "property"
+			}
+		}
+	]
+}

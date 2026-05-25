@@ -25,6 +25,7 @@ export type LinearAlgebraClass = {
 	elementwiseSubtract: (self: LinearAlgebraClass, A: Matrix, B: Matrix) -> Matrix,
 	relu: (self: LinearAlgebraClass, A: Matrix) -> Matrix,
 	reluBackward: (self: LinearAlgebraClass, A: Matrix, gradOutput: Matrix) -> Matrix,
+	xavierMatrix: (self: LinearAlgebraClass, rows: number, cols: number) -> Matrix,
 }
 
 local LinearAlgebra = {}
@@ -58,6 +59,25 @@ function LinearAlgebra:randomMatrix(rows: number, cols: number, scale: number?):
 		local row = {}
 		for j = 1, cols do
 			row[j] = (math.random() * 2 - 1) * (scale or 0.1)
+		end
+		mat[i] = row
+	end
+	return mat
+end
+
+-- Xavier normal initialisation: std = sqrt(2 / (rows + cols)).
+-- Keeps forward-pass variance stable for attention and projection weights.
+function LinearAlgebra:xavierMatrix(rows: number, cols: number): Matrix
+	local std = math.sqrt(2 / (rows + cols))
+	local mat: Matrix = {}
+	for i = 1, rows do
+		local row = {}
+		for j = 1, cols do
+			-- Box-Muller transform for ~N(0, std²)
+			local u1 = math.max(1e-9, math.random())
+			local u2 = math.random()
+			local normal = math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
+			row[j] = normal * std
 		end
 		mat[i] = row
 	end

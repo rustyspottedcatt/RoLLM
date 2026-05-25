@@ -11,14 +11,15 @@
     and time to converge compared to a focused char-level setup.
 
     WHAT THIS DOES INSTEAD:
-    - 40 tightly focused game sentences, all consistent vocabulary and length
-    - Model: dModel=64, dFF=128, 4 heads, 2 layers (~75K params)
-    - 200 epochs with batchSize=8 — drives loss low without taking hours
+    - 100 game-help phrases across 10 topics (movement, combat, items, economy, etc.)
+    - Model: dModel=64, dFF=128, 4 heads, 2 layers (~70K params)
+    - 300 epochs with batchSize=16 — sufficient for 100-phrase memorisation
     - Weights saved to DataStore: training runs ONCE, then loads instantly
-    - Temperature 0.2: very focused generation, close to greedy but with minor variation
-    - Keyword seeding: maps player keywords to corpus-matching start phrases
+    - Temperature 0.2: focused generation, close to greedy
+    - Word-overlap routing: content words in player input are matched against corpus
+      phrases; no hardcoded keyword lists — scales with the corpus automatically
 
-    FIRST RUN:  trains for ~5-10 minutes (Studio) / ~15-20 min (in-game) then saves
+    FIRST RUN:  trains for ~20-30 minutes (Studio) / ~40 min (in-game) then saves
     LATER RUNS: loads instantly, skips training entirely
 
     Command: !talk <your message>
@@ -36,54 +37,124 @@ local RoLLM = require(ReplicatedStorage.RoLLM)
 
 local BOT_NAME    = "ProBot"
 local CMD_PREFIX  = "!talk"
-local STORE_KEY   = "ProTalkingBot_v2"
-local MAX_TOKENS  = 56
+local STORE_KEY   = "ProTalkingBot_v3"
+local MAX_TOKENS  = 50
 local TEMPERATURE = 0.2
 
--- Tightly focused corpus. Consistent vocabulary, shared prefixes, no mixed styles.
--- The more sentences share common prefixes, the easier it is for a char-level model
--- to learn the n-gram patterns that make generation feel coherent.
+-- 100-phrase corpus covering movement, controls, items, combat, economy, map,
+-- game modes, social, tips, and misc. More diverse coverage means word-overlap
+-- seed routing can handle most natural player questions without a hardcoded map.
 local CORPUS = {
+	-- Movement
 	"you can move using wasd or the arrow keys",
 	"you can jump by pressing the space bar",
 	"you can sprint by holding the shift key",
-	"you can respawn by clicking the respawn button",
-	"you can see other players on the minimap",
-	"you can buy upgrades from the shop menu",
-	"you can collect gems to increase your score",
-	"you can interact with objects by pressing e",
-	"you can open the map by pressing m",
-	"you can chat with other players in the chat box",
-	"press space to jump over gaps and obstacles",
-	"press e to open chests and pick up items",
-	"press m to open the map and see the layout",
-	"press tab to see the current leaderboard",
-	"press shift to sprint and move faster",
-	"the round starts when enough players are ready",
-	"the round ends when the timer reaches zero",
-	"the player with the most gems wins the round",
-	"the map resets at the start of each new round",
-	"the leaderboard updates after every round ends",
-	"the boss appears at the end of every third round",
-	"the boss drops a rare gem when defeated",
-	"the golden gem is worth ten normal gems",
-	"the shop sells speed boots shields and traps",
-	"the minimap shows all players and gem locations",
-	"gems respawn every thirty seconds across the map",
+	"you can double jump by pressing space twice",
+	"you can swim by moving into the water",
+	"you can climb ladders by walking into them",
+	"you can crouch by pressing the ctrl key",
+	"you can dash by double tapping a direction key",
+	"you can slow down by releasing all movement keys",
+	"you can fly in creative mode with the f key",
+	-- Controls
+	"press e to interact with objects and npcs",
+	"press m to open and close the map",
+	"press tab to view the leaderboard scores",
+	"press esc to open the settings and pause menu",
+	"press g to drop the item you are holding",
+	"press r to reload your weapon when ammo is low",
+	"press q to swap between your two equipped items",
+	"press f to pick up items and gems from the ground",
+	"press t to open the team chat for your group",
+	"press b to open the backpack and view your items",
+	-- Items
+	"gems are the main currency used in this game",
 	"blue gems are worth three points each",
 	"red gems are worth one point each",
 	"rare gems are worth ten points each",
+	"golden gems are worth fifty points each",
 	"chests contain gems shields or speed boots",
-	"speed boots make you faster for ten seconds",
-	"a shield blocks one hit before breaking",
-	"traps slow down enemies who walk into them",
-	"falling off the map causes you to lose gems",
-	"landing on an enemy stuns them for two seconds",
-	"teamwork helps you reach higher platform areas",
-	"the exit door opens only when you find the key",
 	"keys are hidden inside chests around the map",
+	"speed boots make you faster for ten seconds",
+	"a shield blocks one hit before it breaks",
+	"traps slow down any player who steps on them",
+	-- Combat
+	"you can attack by clicking the left mouse button",
+	"you can block attacks by holding right mouse button",
+	"you can dodge by pressing shift while moving",
+	"landing on an enemy stuns them for two seconds",
+	"falling off the map causes you to lose five gems",
+	"you can heal by standing still for three seconds",
+	"a stunned enemy cannot move or attack briefly",
+	"your health bar is shown in the bottom left corner",
+	"you respawn at the nearest checkpoint after dying",
+	"hitting a trap deals double damage to the enemy",
+	-- Economy
+	"you can buy upgrades from the shop in the town",
+	"the shop sells speed boots shields and traps",
+	"upgrades cost gems and last until the round ends",
+	"selling items at the shop gives you bonus gems",
+	"the shop refreshes its stock at the start of rounds",
+	"rare items in the shop appear only every third round",
+	"you can spend gems to unlock new character skins",
+	"daily quests reward you with bonus gems when done",
+	"you earn extra gems by finishing in the top three",
+	"the premium shop contains exclusive cosmetic items",
+	-- Map and navigation
+	"the minimap shows all players and gem locations",
+	"waypoints appear on the minimap when a quest is active",
+	"the exit door opens only when you find the key",
+	"green zones on the map are safe areas to rest",
+	"red zones on the map have stronger enemies and loot",
+	"you can see other players as dots on the minimap",
+	"the map resets at the start of each new round",
+	"hidden areas on the map contain rare gems and chests",
+	"the spawn point is marked with a blue star on the map",
+	"portals on the map teleport you to different zones",
+	-- Game modes
+	"the round starts when enough players are ready",
+	"the round ends when the timer reaches zero seconds",
+	"the player with the most gems wins the round",
+	"the leaderboard updates after every round ends",
+	"the boss appears at the end of every third round",
+	"the boss drops a rare gem when defeated by a player",
 	"the timer shows how many seconds remain in the round",
-	"your score is shown in the top right corner",
+	"gems respawn every thirty seconds across the map",
+	"bonus rounds give double gem rewards for one minute",
+	"survival mode ends when only one player remains alive",
+	-- Social
+	"you can chat with other players in the chat box",
+	"you can form a team with up to four other players",
+	"teamwork helps you reach higher platform areas faster",
+	"you can trade gems with teammates during a round",
+	"the team with the most combined gems wins team mode",
+	"you can invite friends to your team from the menu",
+	"your score is shown in the top right corner of screen",
+	"you can see other players health bars above their heads",
+	"sending a friend request adds them to your friends list",
+	"you can mute other players in the settings menu",
+	-- Tips
+	"collect gems quickly before other players take them",
+	"use speed boots to escape from enemies chasing you",
+	"place traps near gem spawns to catch other players",
+	"save your shield for the boss fight at round three",
+	"farm blue gems early and spend on upgrades midgame",
+	"the golden gem spawns once per round near the center",
+	"stay near teammates when exploring dangerous red zones",
+	"use the minimap to track where other players are moving",
+	"finishing a quest gives more gems than farming alone",
+	"practice the double jump to reach secret platform areas",
+	-- Misc
+	"you can respawn by clicking the respawn button on screen",
+	"your settings are saved automatically when you leave",
+	"the tutorial teaches you the basic controls and rules",
+	"your progress is saved to the server every ten seconds",
+	"the daily login reward gives you bonus gems each day",
+	"you can view your stats in the profile menu",
+	"achievements reward you with gems and exclusive badges",
+	"contacting support can be done from the settings menu",
+	"you can report players using the report button in menu",
+	"the exit door opens after you collect the golden key",
 }
 
 local function buildTrainingData(raw: { string }): { string }
@@ -106,59 +177,94 @@ local llm = RoLLM.new(trainingData, {
 	numHeads      = 4,
 	dFF           = 128,
 	numLayers     = 2,
-	maxSeqLen     = 45,
+	maxSeqLen     = 60,
 	tokenizerMode = "char",
 })
 
 print(string.format("[%s] %d params | vocab: %d chars | %d training samples",
 	BOT_NAME, llm:getParameterCount(), llm._tokenizer:getVocabSize(), #trainingData))
 
--- Maps player input keywords to seed phrases that exist in the training corpus.
--- Seeds that match actual corpus prefixes give the model the best starting context.
-local SEED_MAP = {
-	{ keys = { "move","walk","wasd","arrow","control" }, seed = "you can move"    },
-	{ keys = { "jump","space","hop","leap" },            seed = "press space"      },
-	{ keys = { "sprint","fast","run","shift" },          seed = "press shift"      },
-	{ keys = { "respawn","die","dead","fell" },          seed = "you can respawn"  },
-	{ keys = { "gem","score","point","collect" },        seed = "you can collect"  },
-	{ keys = { "shop","buy","upgrade","spend" },         seed = "you can buy"      },
-	{ keys = { "map","minimap","where","location" },     seed = "the minimap"      },
-	{ keys = { "round","start","begin","end","win" },    seed = "the round"        },
-	{ keys = { "boss","enemy","fight","third" },         seed = "the boss"         },
-	{ keys = { "chest","key","door","exit" },            seed = "the exit door"    },
-	{ keys = { "shield","protect","hit","block" },       seed = "a shield"         },
-	{ keys = { "speed","boot","faster" },                seed = "speed boots"      },
-	{ keys = { "trap","slow","stun" },                   seed = "traps slow"       },
-	{ keys = { "blue","red","rare","worth","point" },    seed = "blue gems"        },
-	{ keys = { "timer","time","second","remain" },       seed = "the timer"        },
-	{ keys = { "team","together","help","partner" },     seed = "teamwork"         },
-	{ keys = { "leader","board","top","rank" },          seed = "the leaderboard"  },
-	{ keys = { "interact","press e","open","e key" },    seed = "press e"          },
+-- Common English stopwords — excluded from overlap scoring so only content words match.
+local STOPWORDS: { [string]: boolean } = {
+	["the"]=true, ["a"]=true, ["an"]=true, ["is"]=true, ["it"]=true, ["in"]=true,
+	["on"]=true, ["at"]=true, ["to"]=true, ["do"]=true, ["i"]=true, ["me"]=true,
+	["my"]=true, ["we"]=true, ["you"]=true, ["he"]=true, ["she"]=true, ["are"]=true,
+	["was"]=true, ["be"]=true, ["by"]=true, ["or"]=true, ["and"]=true, ["of"]=true,
+	["for"]=true, ["can"]=true, ["how"]=true, ["what"]=true, ["when"]=true,
+	["where"]=true, ["who"]=true, ["why"]=true, ["this"]=true, ["that"]=true,
+	["with"]=true, ["from"]=true, ["up"]=true, ["out"]=true,
 }
 
-local function getSeed(input: string): string
-	local lower = input:lower()
-	for _, entry in ipairs(SEED_MAP) do
-		for _, kw in ipairs(entry.keys) do
-			if lower:find(kw, 1, true) then
-				return entry.seed
-			end
+-- Word-overlap seed selection: score every corpus phrase by how many content words
+-- it shares with the player's input, then use the first 3 words of the winner as seed.
+-- Scales automatically as the corpus grows — no hardcoded keyword lists needed.
+local function getBestSeed(input: string): string
+	local inputWords: { [string]: boolean } = {}
+	for word in input:lower():gmatch("%a+") do
+		if not STOPWORDS[word] then
+			inputWords[word] = true
 		end
 	end
-	-- Fall back to a random corpus phrase prefix so generation stays in-distribution
+
+	local bestPhrase: string? = nil
+	local bestScore  = 0
+	for _, phrase in ipairs(trainingData) do
+		local score = 0
+		for word in phrase:gmatch("%a+") do
+			if inputWords[word] then score += 1 end
+		end
+		if score > bestScore then
+			bestScore = score
+			bestPhrase = phrase
+		end
+	end
+
+	if bestPhrase and bestScore > 0 then
+		local words: { string } = {}
+		for w in bestPhrase:gmatch("%S+") do
+			table.insert(words, w)
+			if #words >= 3 then break end
+		end
+		return table.concat(words, " ")
+	end
+
+	-- No corpus overlap: seed from the player's own words (first 20 chars lowercase)
+	local raw = input:lower():match("^%s*(.-)%s*$") or ""
+	if #raw >= 2 then return raw:sub(1, math.min(20, #raw)) end
+
+	-- Last resort: random corpus phrase prefix
 	local pick = trainingData[math.random(1, #trainingData)]
-	return pick:sub(1, math.min(10, #pick))
+	return pick:sub(1, math.min(12, #pick))
 end
 
 local function cleanResponse(raw: string): string
-	-- Trim to first sentence boundary
-	local trimmed = raw:match("^(.-[%a%d][%.,!%?])")
-		or raw:match("^(.+%a)")
-		or raw
-	trimmed = trimmed:match("^%s*(.-)%s*$") or trimmed
-	if #trimmed < 5 then trimmed = raw:match("^%s*(.-)%s*$") or raw end
-	-- Capitalize first letter
-	return trimmed:sub(1, 1):upper() .. trimmed:sub(2)
+	local lower = raw:lower()
+
+	-- 1. Corpus-prefix match: find the longest known phrase the output begins with,
+	--    then truncate to exactly that phrase (eliminates post-phrase garbage entirely).
+	local bestLen = 0
+	for _, phrase in ipairs(trainingData) do
+		if #phrase > bestLen and lower:sub(1, #phrase) == phrase then
+			bestLen = #phrase
+		end
+	end
+	if bestLen >= 5 then
+		local out = raw:sub(1, bestLen)
+		return out:sub(1, 1):upper() .. out:sub(2)
+	end
+
+	-- 2. Heuristic fallback for unmatched seeds: detect garbage (4+ identical
+	--    consecutive chars like "oooo") and trim to the last clean word before it.
+	local clean = raw
+	local garbled = clean:find("(.)%1%1%1")
+	if garbled then
+		local lastSpace = clean:sub(1, garbled - 1):match(".*%s()")
+		clean = clean:sub(1, (lastSpace or garbled) - 1)
+	end
+	clean = clean:match("^(.+%a)") or clean
+	clean = clean:match("^%s*(.-)%s*$") or clean
+	if #clean < 3 then clean = raw:match("^%s*(.-)%s*$") or raw end
+	return clean:sub(1, 1):upper() .. clean:sub(2)
 end
 
 -- Load or train
@@ -168,7 +274,7 @@ if llm:loadModel(STORE_KEY) then
 	print(string.format("[%s] Loaded saved model. Training skipped.", BOT_NAME))
 else
 	print(string.format(
-		"[%s] No saved model found. Training %d samples for 200 epochs.",
+		"[%s] No saved model found. Training %d samples for 300 epochs.",
 		BOT_NAME, #trainingData))
 	print(string.format("[%s] Estimated time: 5-10 min (Studio) / 15-20 min (in-game). Runs once.", BOT_NAME))
 
@@ -177,9 +283,9 @@ else
 	local recentLosses: { number } = {}
 	local ROLLING_N   = 10
 
-	local history = llm:trainModel(trainingData, 200, 0.007, {
+	local history = llm:trainModel(trainingData, 300, 0.007, {
 		actorCount        = 4,
-		batchSize         = 8,
+		batchSize         = 16,
 		yieldEverySamples = 1,
 		onEpochComplete   = function(epoch, total, avgLoss, elapsed)
 			-- Track best and rolling average
@@ -248,21 +354,29 @@ print("")
 
 print(string.format("[%s] Ready. Type '%s <message>' to talk.", BOT_NAME, CMD_PREFIX))
 
+local function handleChat(player: Player, message: string)
+	local lower = message:lower()
+	if lower:sub(1, #CMD_PREFIX) ~= CMD_PREFIX:lower() then return end
+
+	local input = message:sub(#CMD_PREFIX + 1):match("^%s*(.-)%s*$") or ""
+	if #input == 0 then
+		print(string.format("[%s] %s asked with no input — using random seed.", BOT_NAME, player.Name))
+	end
+
+	local seed     = getBestSeed(input)
+	local raw      = llm:generateTemperature(seed, MAX_TOKENS, TEMPERATURE)
+	local response = cleanResponse(raw)
+
+	print(string.format("[%s] %s asked: %q", BOT_NAME, player.Name, input))
+	print(string.format("[%s] (seed: %q) -> %q", BOT_NAME, seed, response))
+end
+
+-- Connect players already in the game (e.g. Studio tester who joined before training finished)
+for _, player in ipairs(Players:GetPlayers()) do
+	player.Chatted:Connect(function(msg) handleChat(player, msg) end)
+end
+
+-- Connect future joiners
 Players.PlayerAdded:Connect(function(player)
-	player.Chatted:Connect(function(message)
-		local lower = message:lower()
-		if lower:sub(1, #CMD_PREFIX) ~= CMD_PREFIX:lower() then return end
-
-		local input = message:sub(#CMD_PREFIX + 1):match("^%s*(.-)%s*$") or ""
-		if #input == 0 then
-			print(string.format("[%s] %s asked with no input — using random seed.", BOT_NAME, player.Name))
-		end
-
-		local seed = getSeed(input)
-		local raw  = llm:generateTemperature(seed, MAX_TOKENS, TEMPERATURE)
-		local response = cleanResponse(raw)
-
-		print(string.format("[%s] %s asked: %q", BOT_NAME, player.Name, input))
-		print(string.format("[%s] (seed: %q) -> %q", BOT_NAME, seed, response))
-	end)
+	player.Chatted:Connect(function(msg) handleChat(player, msg) end)
 end)

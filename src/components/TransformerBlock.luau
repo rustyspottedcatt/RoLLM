@@ -20,6 +20,8 @@ export type TransformerBlockClass = {
 	norm1: LayerNorm.LayerNormClass,
 	norm2: LayerNorm.LayerNormClass,
 	forward: (self: TransformerBlockClass, x: Matrix, mask: Matrix?) -> Matrix,
+	forwardCached: (self: TransformerBlockClass, x: Matrix, mask: Matrix?) -> Matrix,
+	clearKVCache: (self: TransformerBlockClass) -> (),
 	backward: (self: TransformerBlockClass, gradOutput: Matrix) -> Matrix,
 	getParameters: (
 		self: TransformerBlockClass
@@ -86,6 +88,37 @@ function TransformerBlock:forward(x: Matrix, mask: Matrix?): Matrix
 	}
 
 	return x3
+end
+
+-- Inference-only forward that uses the MHA KV cache.
+-- The FF and LayerNorm sub-layers are still computed normally (no caching needed).
+function TransformerBlock:forwardCached(x: Matrix, mask: Matrix?): Matrix
+	local attnOut = self.mha:forwardCached(x, mask)
+
+	local x2_input = {}
+	for i = 1, #x do
+		x2_input[i] = {}
+		for j = 1, self.dModel do
+			x2_input[i][j] = x[i][j] + attnOut[i][j]
+		end
+	end
+	local x2 = self.norm1:forward(x2_input)
+
+	local ffOut = self.ff:forward(x2)
+
+	local x3_input = {}
+	for i = 1, #x2 do
+		x3_input[i] = {}
+		for j = 1, self.dModel do
+			x3_input[i][j] = x2[i][j] + ffOut[i][j]
+		end
+	end
+
+	return self.norm2:forward(x3_input)
+end
+
+function TransformerBlock:clearKVCache()
+	self.mha:clearKVCache()
 end
 
 function TransformerBlock:backward(gradOutput: Matrix): Matrix

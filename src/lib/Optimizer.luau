@@ -15,6 +15,8 @@ export type OptimizerClass = {
 	v: { [string]: any },
 	t: number,
 	updateParameters: (self: OptimizerClass, parameters: { any }, learningRate: number) -> number,
+	clipGradNorm: (self: OptimizerClass, parameters: { [string]: { value: any, grad: any } }, maxNorm: number) -> number,
+	getLR: (self: OptimizerClass, epoch: number, totalEpochs: number, baseLR: number, warmupEpochs: number?) -> number,
 }
 
 local Optimizer = {}
@@ -106,6 +108,61 @@ function Optimizer:updateParameters(parameters: { [string]: { value: any, grad: 
 	end
 
 	return count
+end
+
+-- Global gradient norm clipping.  Computes the L2 norm across ALL parameter gradients,
+-- scales every gradient down if the norm exceeds maxNorm.  Returns the pre-clip norm.
+function Optimizer:clipGradNorm(
+	parameters: { [string]: { value: any, grad: any } },
+	maxNorm: number
+): number
+	local totalSq = 0
+	for _, paramStruct in pairs(parameters) do
+		local G = paramStruct.grad
+		if type(G[1]) == "table" then
+			for _, row in ipairs(G) do
+				for _, g in ipairs(row) do
+					totalSq += g * g
+				end
+			end
+		else
+			for _, g in ipairs(G) do
+				totalSq += g * g
+			end
+		end
+	end
+
+	local norm = math.sqrt(totalSq)
+	if norm > maxNorm then
+		local scale = maxNorm / norm
+		for _, paramStruct in pairs(parameters) do
+			local G = paramStruct.grad
+			if type(G[1]) == "table" then
+				for _, row in ipairs(G) do
+					for j, g in ipairs(row) do
+						row[j] = g * scale
+					end
+				end
+			else
+				for i, g in ipairs(G) do
+					G[i] = g * scale
+				end
+			end
+		end
+	end
+
+	return norm
+end
+
+-- Learning-rate schedule: linear warmup for warmupEpochs, then cosine decay to baseLR/10.
+function Optimizer:getLR(epoch: number, totalEpochs: number, baseLR: number, warmupEpochs: number?): number
+	local warmup = warmupEpochs or math.max(1, math.floor(totalEpochs * 0.05))
+	if epoch <= warmup then
+		return baseLR * (epoch / warmup)
+	end
+	local progress = (epoch - warmup) / math.max(1, totalEpochs - warmup)
+	local cosineDecay = 0.5 * (1 + math.cos(math.pi * progress))
+	return baseLR * 0.1 + baseLR * 0.9 * cosineDecay
 end
 
 return Optimizer
