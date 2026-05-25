@@ -1,7 +1,7 @@
 [package]
 name = "rustyspottedcatt/rollm"
 description = "A lightweight educational transformer language-model framework for Roblox Luau."
-version = "0.2.0"
+version = "0.2.1"
 license = "MIT"
 authors = ["rustyspotted"]
 repository = "https://github.com/rustyspottedcatt/RoLLM"
